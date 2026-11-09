@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Secrets – never commit
+.streamlit/secrets.toml
+.env
+
+# Local data – Cricsheet files live in Databricks, not in Git
+data/
+*.zip
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
