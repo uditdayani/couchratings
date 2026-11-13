@@ -1,4 +1,5 @@
-streamlit
-databricks-sql-connector
+streamlit>=1.40
+databricks-sql-connector>=3.0
 pandas
-requests
+pyarrow
+altair
