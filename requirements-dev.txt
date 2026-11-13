@@ -1,4 +1,5 @@
 # For running the tests on your own machine or in GitHub Actions (needs Java 17+).
 # Not used by Streamlit Cloud, which reads requirements.txt.
+-r requirements.txt
 pyspark==3.5.3
 pytest
