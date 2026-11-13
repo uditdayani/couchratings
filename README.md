@@ -2,7 +2,7 @@
 
 Sofascore-style 0–10 match ratings and form ratings for T20 cricketers, built as a medallion data pipeline (Bronze → Silver → Gold) on Databricks Free Edition with a Streamlit dashboard.
 
-**Status:** Week 6 – validation: every check of the rating system in one notebook.
+**Status:** Week 7 – Streamlit dashboard: form leaderboards, player pages, match cards.
 
 ## Repo layout
 
@@ -28,7 +28,11 @@ notebooks/
   07_gold_scale_form.py     Week 5: 0–10 ratings, form and leaderboards
   08_validation.py          Week 6: run every validation check
 tests/                      pytest suite on small hand-built matches
-app/streamlit_app.py        Dashboard (week 1: connection check)
+app/                        Streamlit dashboard
+  streamlit_app.py          Entry point and navigation
+  data.py                   Loads the Gold tables once (cached 12 h), or demo files
+  ui.py                     Rating colours, scorecard formatting, charts
+  views/                    Form leaderboard, Player, Match, About pages
 scripts/download_cricsheet.py  Local fallback download
 ```
 
@@ -105,6 +109,50 @@ Wicket shares (starting values): bowled, lbw, hit wicket, caught and bowled 100%
 
 It also compares player-of-the-match awards the model disagrees with against those it agrees with, by role and by winning or losing side.
 
+### Results (model v2, 13 Nov 2026)
+
+All 14 checks pass.
+
+| Check | IPL | T20I full members | T20I other |
+| --- | --- | --- | --- |
+| Calibration (avg first-innings runs added) | +0.22 | +1.35 | +1.57 |
+| Median rating | 6.5 | 6.5 | 6.5 |
+| 9+ ratings driven mainly by bowling | 36.5% | 36.3% | 34.3% |
+
+- **Player of the match:** in the top 3 rated in **81.6%** of 4,564 matches, and top-rated in 51.7%.
+- **Famous performances:** **9 of 10** rate 9+, and all 7 chosen independently of the model rate 9.6–10 (Rohit Sharma's 118, Maxwell's 145*, Finch's 172, Mendis's 6/8, Chahar's 6/7, Alzarri Joseph's 6/12). The miss is Yuvraj Singh's 58 off 16 (six sixes), rated 8.8.
+- The median and the 9.3+ share are identical across competitions by design (ratings are percentiles within each competition), so they confirm the mapping rather than the model.
+
+### Known limitations, from validation
+
+- **Short, match-turning cameos are underrated.** Ratings measure runs above expectation, so a brilliant 58 off 16 is worth about 30 runs and rates 8.8, below big innings. Valuing *when* runs swing a match needs a win-probability model.
+- **Ratings ignore the result.** Where the official player of the match isn't in our top 3 (842 matches), the award winner was on the winning side 96% of the time, but our top-rated player only 47%.
+- **Compared with awards, the model credits bowlers more.** In those disagreements, 52% of our top-rated players were mainly bowlers, while 61% of award winners were mainly batters.
+- **Opposition strength isn't modelled.** Ranking within competition removes most of the effect of lopsided associate matches, but a big score against a weak attack still counts the same as against a strong one.
+
+## Dashboard
+
+A four-page Streamlit app (`app/`), deployed on Streamlit Community Cloud with main file `app/streamlit_app.py`:
+
+| Page | Shows |
+| --- | --- |
+| Form leaderboard | Top players by form, overall or per competition; click a row to open the player |
+| Player | Current form, average and best rating, last 20 ratings as a colour-banded chart, where the impact comes from, and a match log; click a match to open it |
+| Match | Score, result, and both teams' players rated with their batting, bowling and fielding lines; the official player of the match is starred |
+| About | Method, rating bands, model version, latest data, live validation results and known limitations |
+
+Each Gold table is read once from the SQL warehouse and cached for 12 hours, so pages respond instantly and the warehouse is barely used. Player and match pages have shareable links (`?player=…`, `?match=…`).
+
+**Secrets** (Streamlit app settings): see `.streamlit/secrets.toml.example`; add `catalog` and the `[app]` section to the week 1 secrets.
+
+**Run locally without Databricks** (demo data with the same shape as the real tables):
+
+```bash
+pip install -r requirements.txt
+python tests/app_demo.py demo_data
+CRICKET_RATINGS_DATA_DIR=demo_data streamlit run app/streamlit_app.py
+```
+
 ## Running week 2 on Databricks
 
 Pull the latest code into your Git folder, then run on serverless compute, in order:
@@ -124,7 +172,7 @@ pip install -r requirements-dev.txt   # needs Java 17+
 pytest -q tests
 ```
 
-The tests cover every validation check passing on good data and failing on bad, the 0–10 mapping and form (anchors, interpolation, within-competition ranking, involvement, recency weights, leaderboard eligibility), the rating engine against hand-worked credits for a full innings (wides, no-balls, leg-byes, a catch, a substitute's run out, scaling), the run-expectancy smoothing against a table with a known answer (pooling, gaps, edges, monotonicity), the first-time-in-state observations, versioned model writes, legal-ball counting with wides and no-balls, wickets and substitute fielders, no-result and super-over matches, quarantining bad files, idempotent re-runs, revised files, and the quality checks catching broken rows. Delta-only writes (in `storage.py`) are swapped for plain-Spark equivalents in tests.
+The tests cover the dashboard (every page rendering on demo data, filters, links between pages, a clear error when data is missing, scorecard formatting), every validation check passing on good data and failing on bad, the 0–10 mapping and form (anchors, interpolation, within-competition ranking, involvement, recency weights, leaderboard eligibility), the rating engine against hand-worked credits for a full innings (wides, no-balls, leg-byes, a catch, a substitute's run out, scaling), the run-expectancy smoothing against a table with a known answer (pooling, gaps, edges, monotonicity), the first-time-in-state observations, versioned model writes, legal-ball counting with wides and no-balls, wickets and substitute fielders, no-result and super-over matches, quarantining bad files, idempotent re-runs, revised files, and the quality checks catching broken rows. Delta-only writes (in `storage.py`) are swapped for plain-Spark equivalents in tests.
 
 ## Data and attribution
 
