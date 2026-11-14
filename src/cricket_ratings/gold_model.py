@@ -22,6 +22,7 @@ from pyspark.sql import functions as F
 
 from . import storage
 from .config import Tables
+from .schema import BOWLER_WICKET_KINDS, wickets_band
 
 TOTAL_BALLS = 120   # 20 overs x 6 balls
 MAX_WICKETS = 10
@@ -243,6 +244,34 @@ def venue_factors(rates: DataFrame, env: DataFrame, prior_matches: int = 10) -> 
     )
 
 
+# ----------------------------------------------------------------- bowling par
+
+def par_rates(spark: SparkSession, t: Tables, matches: DataFrame) -> DataFrame:
+    """What a typical bowler concedes and takes per legal ball, by over (1-20) and wickets
+    down (0-2, 3-5, 6+). Runs include wides and no-balls; wickets are those credited to
+    the bowler. Both innings of the fitting matches. Scaled per match later, like RE."""
+    d = (spark.table(t.silver_deliveries).filter("innings_no IN (1, 2) AND NOT is_super_over")
+         .join(matches.select("match_id"), "match_id"))
+    before = Window.partitionBy("match_id", "innings_no").orderBy("seq") \
+        .rowsBetween(Window.unboundedPreceding, -1)
+    bowler_wkts = F.size(F.filter("wickets", lambda w: w["kind"].isin(*BOWLER_WICKET_KINDS)))
+    d = d.select(
+        (F.least(F.col("over"), F.lit(19)) + 1).alias("over_no"),
+        wickets_band(F.coalesce(F.sum("dismissals").over(before), F.lit(0))).alias("wickets_band"),
+        F.col("is_legal").cast("int").alias("legal"),
+        (F.col("runs_batter") + F.col("extras_wides") + F.col("extras_noballs")).alias("charged"),
+        bowler_wkts.alias("bowler_wickets"),
+    )
+    g = d.groupBy("over_no", "wickets_band").agg(
+        F.sum("legal").alias("legal_balls"), F.sum("charged").alias("runs"),
+        F.sum("bowler_wickets").alias("bowler_wickets"))
+    return g.filter("legal_balls > 0").select(
+        "over_no", "wickets_band", "legal_balls",
+        F.round(F.col("runs") / F.col("legal_balls"), 4).alias("runs_per_ball"),
+        F.round(F.col("bowler_wickets") / F.col("legal_balls"), 5).alias("wickets_per_ball"),
+    )
+
+
 # --------------------------------------------------------------------- fit
 
 def fit_model(spark: SparkSession, t: Tables, version: str, min_date: Optional[str] = None,
@@ -270,6 +299,8 @@ def fit_model(spark: SparkSession, t: Tables, version: str, min_date: Optional[s
     one_version = venues.select("version").limit(1)
     storage.replace_rows(spark, t.gold_environment_factors, env, one_version, "version")
     storage.replace_rows(spark, t.gold_venue_factors, venues, one_version, "version")
+    par = par_rates(spark, t, fit_matches).withColumn("version", F.lit(version))
+    storage.replace_rows(spark, t.gold_par_rates, par, one_version, "version")
 
     params = {"min_date": min_date, "min_samples": min_samples, "max_window": max_window,
               "venue_prior_matches": venue_prior_matches,
