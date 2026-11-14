@@ -16,13 +16,15 @@ Credits (all in runs):
 Byes and leg-byes are not charged to the bowler, and are not the batter's runs.
 Super overs are not rated. No-result matches are not rated.
 """
+from typing import Optional
+
 from pyspark.sql import Column, DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
 
 from . import storage
 from .config import Tables
 from .gold_model import MAX_WICKETS, TOTAL_BALLS, competition_col
-from .schema import NOT_DISMISSALS
+from .schema import NOT_DISMISSALS, wickets_band
 
 # Share of a wicket's value earned by the bowler and by the fielders (starting values, tuned in week 6).
 BOWLER_SHARE = {"bowled": 1.0, "lbw": 1.0, "hit wicket": 1.0, "caught and bowled": 1.0,
@@ -34,6 +36,7 @@ NUMBERS = {  # every credit row carries all of these
     "runs": "int", "balls_faced": "int", "dismissed": "int",
     "balls_bowled": "int", "runs_conceded": "int", "wickets": "int",
     "catches": "int", "stumpings": "int", "run_outs": "int",
+    "par_runs_conceded": "double", "par_wickets": "double",
 }
 
 
@@ -65,8 +68,9 @@ def rated_matches(spark: SparkSession, t: Tables) -> DataFrame:
 
 
 def ball_values(deliveries: DataFrame, rated: DataFrame, re: DataFrame,
-                env: DataFrame, venues: DataFrame) -> DataFrame:
-    """One row per ball of innings 1 and 2: the state before and after, and its value."""
+                env: DataFrame, venues: DataFrame, par: Optional[DataFrame] = None) -> DataFrame:
+    """One row per ball of innings 1 and 2: the state before and after, and its value.
+    With `par` (gold.par_rates), also what a typical bowler concedes and takes on that ball."""
     d = deliveries.filter("innings_no IN (1, 2) AND NOT is_super_over").join(rated, "match_id")
     in_order = Window.partitionBy("match_id", "innings_no").orderBy("seq")
     before = in_order.rowsBetween(Window.unboundedPreceding, -1)
@@ -93,6 +97,16 @@ def ball_values(deliveries: DataFrame, rated: DataFrame, re: DataFrame,
           .join(re_as("b_after", "w_before", "re1"), ["b_after", "w_before"], "left")
           .join(re_as("b_after", "w_after", "re2"), ["b_after", "w_after"], "left"))
 
+    d = d.withColumn("over_no", F.least(F.col("over"), F.lit(19)) + 1) \
+         .withColumn("wickets_band", wickets_band(F.col("w_before")))
+    if par is not None:
+        d = d.join(F.broadcast(par.select("over_no", "wickets_band", "runs_per_ball", "wickets_per_ball")),
+                   ["over_no", "wickets_band"], "left")
+    else:
+        d = d.withColumn("runs_per_ball", F.lit(None).cast("double")) \
+             .withColumn("wickets_per_ball", F.lit(None).cast("double"))
+    legal_only = F.when(F.col("is_legal"), F.lit(1.0)).otherwise(F.lit(0.0))
+
     e0, e1, e2 = (F.col(c) * F.col("scale") for c in ("re0", "re1", "re2"))
     return d.select(
         "match_id", "innings_no", "seq", "competition", "year", "venue",
@@ -105,6 +119,9 @@ def ball_values(deliveries: DataFrame, rated: DataFrame, re: DataFrame,
         F.round(e1 - e0, 4).alias("ball_cost"),
         F.round(e2 - e1, 4).alias("wicket_cost"),
         F.round(F.col("runs_total") + e2 - e0, 4).alias("runs_added"),
+        "over_no",
+        F.round(F.col("runs_per_ball") * F.col("scale") * legal_only, 4).alias("par_runs"),
+        F.round(F.col("wickets_per_ball") * legal_only, 5).alias("par_wickets"),
     )
 
 
@@ -124,7 +141,8 @@ def player_impact(bv: DataFrame, match_players: DataFrame) -> DataFrame:
                       runs=F.col("runs_batter"), balls_faced=not_wide)
     bowler = _credit(bv, F.col("bowler_id"),
                      bowling=-conceded - F.col("ball_cost"),
-                     balls_bowled=F.col("is_legal").cast("int"), runs_conceded=conceded)
+                     balls_bowled=F.col("is_legal").cast("int"), runs_conceded=conceded,
+                     par_runs_conceded=F.col("par_runs"), par_wickets=F.col("par_wickets"))
 
     wk = (bv.filter("dismissals > 0")
             .select("match_id", "bowler_id", "wicket_cost", "dismissals", F.explode("wickets").alias("wk"))
@@ -171,8 +189,9 @@ def run_ratings(spark: SparkSession, t: Tables, version: str) -> dict:
     if re.limit(1).count() == 0:
         raise ValueError(f"No run-expectancy table for model version {version}: run 05_gold_model first")
 
+    par = of_version(t.gold_par_rates) if spark.catalog.tableExists(t.gold_par_rates) else None
     bv = ball_values(spark.table(t.silver_deliveries), rated_matches(spark, t), re,
-                     of_version(t.gold_environment_factors), of_version(t.gold_venue_factors))
+                     of_version(t.gold_environment_factors), of_version(t.gold_venue_factors), par)
     key = spark.createDataFrame([(version,)], "version string")
     bv = bv.withColumn("version", F.lit(version))
     storage.replace_rows(spark, t.gold_ball_values, bv, key, "version")
