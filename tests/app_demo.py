@@ -66,6 +66,8 @@ def build(seed: int = 7) -> dict:
                         "balls_bowled": bowled, "runs_conceded": int(bowled * rng.uniform(1.0, 1.7)),
                         "wickets": int(rng.integers(0, 4)) if bowled else 0,
                         "catches": int(rng.random() < 0.15), "stumpings": 0, "run_outs": 0,
+                        "par_runs_conceded": round(bowled * 1.35, 1) if bowled else 0.0,
+                        "par_wickets": round(bowled * 0.05, 2) if bowled else 0.0,
                     })
     ratings = pd.DataFrame(ratings)
     matches = pd.DataFrame(matches)
@@ -102,11 +104,7 @@ def build(seed: int = 7) -> dict:
         {"check": "player_of_match_top3", "scope": "All", "value": 81.6, "target": ">= 70%",
          "passed": True, "detail": "4564 matches", "checked_at": pd.Timestamp("2026-11-13 12:00")},
     ])
-    bowlers = ratings[ratings["balls_bowled"] > 0]
-    bowling_par = pd.DataFrame({"match_id": bowlers["match_id"], "player_id": bowlers["player_id"],
-                                "bowling_par": (bowlers["balls_bowled"] * 1.35).round(1)})
-    return {"ratings": ratings, "matches": matches, "form": form, "meta": meta,
-            "validation": validation, "bowling_par": bowling_par}
+    return {"ratings": ratings, "matches": matches, "form": form, "meta": meta, "validation": validation}
 
 
 def write(folder: str, seed: int = 7) -> dict:
