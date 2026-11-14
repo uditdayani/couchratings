@@ -4,7 +4,7 @@ Sofascore-style 0–10 match ratings and form ratings for T20 cricketers, built 
 
 **Status:** V1 complete – daily pipeline, validated ratings, live dashboard.
 
-**Live dashboard:** _add your Streamlit link here_
+**Live dashboard:** 
 
 ## Architecture
 
