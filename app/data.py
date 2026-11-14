@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 
 CACHE_SECONDS = 12 * 3600
-OPTIONAL = {"validation", "bowling_par"}   # the app still works if these tables don't exist yet
+OPTIONAL = {"validation"}   # the app still works if these tables don't exist yet
 
 
 class DataError(Exception):
@@ -39,10 +39,7 @@ def queries(c: str) -> dict:
     """SQL for each dataset. `c` is the catalog; :version is bound as a parameter."""
     return {
         "ratings": f"""
-            SELECT r.match_id, r.match_date, r.competition, r.team, r.player_id, p.name,
-                   r.involved, r.rating, r.percentile, r.total_impact, r.batting, r.bowling,
-                   r.fielding, r.runs, r.balls_faced, r.dismissed, r.balls_bowled,
-                   r.runs_conceded, r.wickets, r.catches, r.stumpings, r.run_outs
+            SELECT r.*, p.name
             FROM {c}.gold.player_match_ratings r
             LEFT JOIN {c}.silver.players p ON p.player_id = r.player_id
             WHERE r.version = :version""",
@@ -60,10 +57,6 @@ def queries(c: str) -> dict:
             LEFT JOIN {c}.silver.innings i2 ON i2.match_id = m.match_id AND i2.innings_no = 2
             WHERE m.match_id IN (SELECT DISTINCT match_id FROM {c}.gold.player_match_ratings
                                  WHERE version = :version)""",
-        "bowling_par": f"""
-            SELECT match_id, bowler_id AS player_id, round(-sum(ball_cost), 1) AS bowling_par
-            FROM {c}.gold.ball_values WHERE version = :version AND is_legal
-            GROUP BY match_id, bowler_id""",
         "form": f"""
             SELECT scope, player_id, name, form_rating, matches_counted, last_match_date,
                    active, leaderboard_rank
@@ -117,6 +110,10 @@ def _load(name: str, demo_dir, catalog: str, version: str) -> pd.DataFrame:
         if name in OPTIONAL:
             return pd.DataFrame()
         raise DataError(f"Couldn't load {name}: {e}") from e
+    if name == "ratings":                    # tables built before par existed
+        for col in ("par_runs_conceded", "par_wickets"):
+            if col not in df.columns:
+                df[col] = None
     for col in ("match_date", "last_match_date", "latest_match", "first_match_date", "fitted_to"):
         if col in df.columns:
             df[col] = pd.to_datetime(df[col])
@@ -124,4 +121,4 @@ def _load(name: str, demo_dir, catalog: str, version: str) -> pd.DataFrame:
 
 
 def load_all() -> dict:
-    return {name: load(name) for name in ("ratings", "matches", "form", "meta", "validation", "bowling_par")}
+    return {name: load(name) for name in ("ratings", "matches", "form", "meta", "validation")}
