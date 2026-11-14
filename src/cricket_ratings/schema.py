@@ -53,3 +53,13 @@ FIELDERS_TYPE = "array<struct<name:string,substitute:boolean>>"
 
 # Dismissal kinds that do not cost the batting side a wicket.
 NOT_DISMISSALS = ("retired hurt", "retired not out")
+
+# Dismissal kinds credited to the bowler (used for bowling par).
+BOWLER_WICKET_KINDS = ("bowled", "lbw", "hit wicket", "caught and bowled", "caught", "stumped")
+
+
+def wickets_band(w_before):
+    """Wickets-down band used for par rates: "0-2", "3-5" or "6+" (a Spark Column)."""
+    from pyspark.sql import functions as F
+    return (F.when(w_before <= 2, F.lit("0-2"))
+             .when(w_before <= 5, F.lit("3-5")).otherwise(F.lit("6+")))
