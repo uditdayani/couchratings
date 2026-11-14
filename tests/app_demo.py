@@ -102,7 +102,11 @@ def build(seed: int = 7) -> dict:
         {"check": "player_of_match_top3", "scope": "All", "value": 81.6, "target": ">= 70%",
          "passed": True, "detail": "4564 matches", "checked_at": pd.Timestamp("2026-11-13 12:00")},
     ])
-    return {"ratings": ratings, "matches": matches, "form": form, "meta": meta, "validation": validation}
+    bowlers = ratings[ratings["balls_bowled"] > 0]
+    bowling_par = pd.DataFrame({"match_id": bowlers["match_id"], "player_id": bowlers["player_id"],
+                                "bowling_par": (bowlers["balls_bowled"] * 1.35).round(1)})
+    return {"ratings": ratings, "matches": matches, "form": form, "meta": meta,
+            "validation": validation, "bowling_par": bowling_par}
 
 
 def write(folder: str, seed: int = 7) -> dict:
