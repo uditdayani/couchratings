@@ -56,13 +56,13 @@ def bowling_line(wickets, runs_conceded, balls_bowled) -> str:
     return f"{int(wickets)}/{int(runs_conceded)} ({overs(balls_bowled)})"
 
 
-def bowling_with_par(wickets, runs_conceded, balls_bowled, par) -> str:
-    """"0/43 (3.3) · par 38": par is the runs a typical bowler would have conceded
-    off the same balls, in the same situations."""
+def bowling_with_par(wickets, runs_conceded, balls_bowled, par_runs, par_wickets) -> str:
+    """"1/34 (4.0) · par 1.2/31": par is what a typical bowler takes and concedes from
+    the same overs, with the same wickets down, in that competition, season and ground."""
     line = bowling_line(wickets, runs_conceded, balls_bowled)
-    if not line or _missing(par):
+    if not line or _missing(par_runs) or not par_runs:
         return line
-    return f"{line} · par {par:.0f}"
+    return f"{line} · par {par_wickets:.1f}/{par_runs:.0f}"
 
 
 def fielding_line(catches, stumpings, run_outs) -> str:
