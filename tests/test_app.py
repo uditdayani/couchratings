@@ -32,6 +32,8 @@ def test_scorecard_lines():
     assert ui.bowling_line(2, 24, 24) == "2/24 (4.0)"
     assert ui.bowling_line(1, 30, 22) == "1/30 (3.4)"
     assert ui.bowling_line(0, 0, 0) == ""
+    assert ui.bowling_with_par(0, 43, 21, 38.2) == "0/43 (3.3) · par 38"
+    assert ui.bowling_with_par(0, 0, 0, None) == ""
     assert ui.fielding_line(2, 0, 1) == "2 ct, 1 ro"
     assert ui.score_line(187, 4, 120) == "187/4 (20.0 ov)"
     assert ui.score_line(143, 10, 112) == "143 (18.4 ov)"        # all out
@@ -102,6 +104,7 @@ def test_match_page(demo):
     assert at.title[0].value == f"{m['team_1']} v {m['team_2']}"
     assert len(at.dataframe) == 2                                 # one card per team
     assert len(at.dataframe[0].value) == 11
+    assert at.dataframe[0].value["Bowling"].str.contains("par").any()
 
 
 def test_about_page(demo):
