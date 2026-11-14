@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 
 CACHE_SECONDS = 12 * 3600
-OPTIONAL = {"validation"}   # the app still works if these tables don't exist yet
+OPTIONAL = {"validation", "bowling_par"}   # the app still works if these tables don't exist yet
 
 
 class DataError(Exception):
@@ -60,6 +60,10 @@ def queries(c: str) -> dict:
             LEFT JOIN {c}.silver.innings i2 ON i2.match_id = m.match_id AND i2.innings_no = 2
             WHERE m.match_id IN (SELECT DISTINCT match_id FROM {c}.gold.player_match_ratings
                                  WHERE version = :version)""",
+        "bowling_par": f"""
+            SELECT match_id, bowler_id AS player_id, round(-sum(ball_cost), 1) AS bowling_par
+            FROM {c}.gold.ball_values WHERE version = :version AND is_legal
+            GROUP BY match_id, bowler_id""",
         "form": f"""
             SELECT scope, player_id, name, form_rating, matches_counted, last_match_date,
                    active, leaderboard_rank
@@ -120,4 +124,4 @@ def _load(name: str, demo_dir, catalog: str, version: str) -> pd.DataFrame:
 
 
 def load_all() -> dict:
-    return {name: load(name) for name in ("ratings", "matches", "form", "meta", "validation")}
+    return {name: load(name) for name in ("ratings", "matches", "form", "meta", "validation", "bowling_par")}
