@@ -2,7 +2,24 @@
 
 Sofascore-style 0–10 match ratings and form ratings for T20 cricketers, built as a medallion data pipeline (Bronze → Silver → Gold) on Databricks Free Edition with a Streamlit dashboard.
 
-**Status:** Week 7 – Streamlit dashboard: form leaderboards, player pages, match cards.
+**Status:** V1 complete – daily pipeline, validated ratings, live dashboard.
+
+**Live dashboard:** _add your Streamlit link here_
+
+## Architecture
+
+```mermaid
+flowchart LR
+    C[Cricsheet<br/>ball-by-ball JSON] -->|daily download| B[(Bronze<br/>raw files)]
+    B --> S[(Silver<br/>matches, innings,<br/>deliveries, players)]
+    S --> Q{Data quality<br/>checks}
+    Q -->|pass| G1[(Gold model<br/>run expectancy,<br/>environment, venue)]
+    G1 --> G2[(Gold ratings<br/>ball values, impact,<br/>0–10 ratings, form)]
+    G2 --> V{Validation}
+    G2 --> D[Streamlit<br/>dashboard]
+```
+
+A scheduled Databricks job (`docs/daily_job.md`) runs Bronze → Silver → checks → ratings → form → validation every morning on serverless compute, with failure emails.
 
 ## Repo layout
 
@@ -28,6 +45,7 @@ notebooks/
   07_gold_scale_form.py     Week 5: 0–10 ratings, form and leaderboards
   08_validation.py          Week 6: run every validation check
 tests/                      pytest suite on small hand-built matches
+docs/daily_job.md           How to set up the scheduled Databricks job
 app/                        Streamlit dashboard
   streamlit_app.py          Entry point and navigation
   data.py                   Loads the Gold tables once (cached 12 h), or demo files
@@ -36,7 +54,7 @@ app/                        Streamlit dashboard
 scripts/download_cricsheet.py  Local fallback download
 ```
 
-## Pipeline so far
+## Tables
 
 | Layer | Table | One row per |
 | --- | --- | --- |
@@ -138,7 +156,7 @@ A four-page Streamlit app (`app/`), deployed on Streamlit Community Cloud with m
 | --- | --- |
 | Form leaderboard | Top players by form, overall or per competition; click a row to open the player |
 | Player | Current form, average and best rating, last 20 ratings as a colour-banded chart, where the impact comes from, and a match log; click a match to open it |
-| Match | Score, result, and both teams' players rated with their batting, bowling and fielding lines; the official player of the match is starred |
+| Match | Score, result, and both teams' players rated with their batting, bowling (with par: what an average bowler would concede off the same balls) and fielding lines; the official player of the match is starred |
 | About | Method, rating bands, model version, latest data, live validation results and known limitations |
 
 Each Gold table is read once from the SQL warehouse and cached for 12 hours, so pages respond instantly and the warehouse is barely used. Player and match pages have shareable links (`?player=…`, `?match=…`).
@@ -153,9 +171,20 @@ python tests/app_demo.py demo_data
 CRICKET_RATINGS_DATA_DIR=demo_data streamlit run app/streamlit_app.py
 ```
 
-## Running week 2 on Databricks
+## Daily updates
 
-Pull the latest code into your Git folder, then run on serverless compute, in order:
+Every morning a Databricks job downloads Cricsheet's last-7-days men's zip, lands new files and corrected versions in Bronze, and rebuilds Silver and Gold. The zip holds every format and league, so Silver keeps only men's T20 internationals and the IPL (others are logged as out of scope). Set-up: [`docs/daily_job.md`](docs/daily_job.md).
+
+## What's next
+
+- **Win probability** instead of run expectancy, to value match-turning moments and chase pressure.
+- **Opposition strength:** credit runs against strong attacks more than against weak ones.
+- **More competitions:** women's T20Is and the WPL, BBL, PSL and others, each backfilled and added to the scope.
+- **ODIs and Tests**, each with its own model.
+
+## Running the pipeline by hand
+
+For a backfill or a new model version, pull the latest code into your Git folder, then run on serverless compute, in order (the daily job runs 02–04 and 06–08):
 
 1. `notebooks/02_bronze_land.py`
 2. `notebooks/03_silver_build.py`
