@@ -14,8 +14,27 @@ from . import storage
 from .config import Tables
 
 
-def extract_zip(zip_path: str, out_dir: str) -> int:
-    """Extract the match JSON files from a Cricsheet zip into out_dir. Returns the file count."""
+RECENT_URL = "https://cricsheet.org/downloads/recently_added_7_male_json.zip"
+RECENT_ZIP = "recent_male_json.zip"     # lands as source "recent_male"
+
+
+def download(url: str, target: str, timeout: int = 120) -> int:
+    """Download a file (e.g. a Cricsheet zip) to `target`. Returns its size in bytes."""
+    import requests
+
+    resp = requests.get(url, timeout=timeout)
+    resp.raise_for_status()
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "wb") as f:
+        f.write(resp.content)
+    return len(resp.content)
+
+
+def extract_zip(zip_path: str, out_dir: str, clear: bool = False) -> int:
+    """Extract the match JSON files from a Cricsheet zip into out_dir. Returns the file count.
+    `clear` empties out_dir first (for the rolling "recently added" zip)."""
+    if clear and os.path.isdir(out_dir):
+        shutil.rmtree(out_dir)
     os.makedirs(out_dir, exist_ok=True)
     count = 0
     with zipfile.ZipFile(zip_path) as z:
