@@ -123,3 +123,28 @@ def test_run_ratings_end_to_end(spark, built):  # noqa: F811
     assert summary["player_matches"] == 12                            # 6 players x 2 rated matches
     with pytest.raises(ValueError, match="v9"):
         gold_ratings.run_ratings(spark, t, "v9")
+
+
+def test_par_rates_and_bowler_par(spark, built):  # noqa: F811
+    """Fixture matches 1000001 and 1000003, both innings. Over 1 with 0-2 down: 11 legal balls,
+    24 runs charged to bowlers (wides and no-balls in, the leg-bye out), 2 bowler wickets
+    (a catch and a bowled). Over 2: 2 legal balls, 6 runs, and a run out (not the bowler's)."""
+    t, _, _ = built
+    gold_model.fit_model(spark, t, "v1", min_samples=1, max_window=0)
+    rates = {(r.over_no, r.wickets_band): r for r in
+             spark.table(t.gold_par_rates).filter("version = 'v1'").collect()}
+    assert set(rates) == {(1, "0-2"), (2, "0-2")}
+    assert (rates[(1, "0-2")].legal_balls, rates[(1, "0-2")].runs_per_ball) == (11, pytest.approx(24 / 11, abs=1e-4))
+    assert rates[(1, "0-2")].wickets_per_ball == pytest.approx(2 / 11, abs=1e-5)
+    assert (rates[(2, "0-2")].runs_per_ball, rates[(2, "0-2")].wickets_per_ball) == (3.0, 0.0)
+
+    gold_ratings.run_ratings(spark, t, "v1")
+    scale = spark.table(t.gold_environment_factors).first().factor           # venue factor is 1.0
+    b1 = spark.table(t.gold_player_match_impact).filter(
+        f"version = 'v1' AND match_id = '1000001' AND player_id = '{B1}'").first()
+    # B1 bowled over 1: 6 legal balls (the wide and no-ball earn no par).
+    assert b1.par_runs_conceded == pytest.approx(6 * 24 / 11 * scale, abs=0.01)
+    assert b1.par_wickets == pytest.approx(6 * 2 / 11, abs=0.001)
+    a1 = spark.table(t.gold_player_match_impact).filter(
+        f"version = 'v1' AND match_id = '1000001' AND player_id = '{A1}'").first()
+    assert a1.par_runs_conceded == pytest.approx(3 * 24 / 11 * scale, abs=0.01)  # 3 balls in innings 2
