@@ -11,6 +11,8 @@ Each run processes only Bronze files the Silver stage has not seen (new files
 or new versions). For those matches it deletes any old rows and inserts fresh
 ones, so re-runs never duplicate data.
 """
+from typing import Sequence
+
 from pyspark.sql import Column, DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
 
@@ -45,13 +47,26 @@ def pending_files(spark: SparkSession, t: Tables) -> DataFrame:
 
 # ------------------------------------------------------------------ parsing
 
-def parse(bronze: DataFrame) -> DataFrame:
+# What the ratings cover: men's T20 internationals, plus these club competitions.
+# Cricsheet's daily "recently added" zip holds every format and league, so anything
+# else is quarantined as out of scope. Add a league here (and backfill its zip) to rate it.
+IN_SCOPE_CLUB_EVENTS = ("Indian Premier League",)
+IN_SCOPE_GENDER = "male"
+
+
+def parse(bronze: DataFrame, club_events: Sequence[str] = IN_SCOPE_CLUB_EVENTS) -> DataFrame:
     """Add the parsed match (`m`) and a quarantine reason (null when the file is usable)."""
     parsed = bronze.withColumn("m", F.from_json("raw_json", MATCH_SCHEMA))
     match_type = F.coalesce(F.col("m.info.match_type"), F.lit("missing"))
+    event = F.coalesce(F.col("m.info.event.name"), F.lit("unnamed event"))
+    in_scope = ((F.col("m.info.team_type") == "international")
+                | F.col("m.info.event.name").isin(*club_events))
     reason = (
         F.when(F.col("m").isNull() | F.col("m.info").isNull(), F.lit("unparseable JSON"))
         .when(match_type != "T20", F.concat(F.lit("match_type is "), match_type))
+        .when(F.coalesce(F.col("m.info.gender"), F.lit("")) != IN_SCOPE_GENDER,
+              F.concat(F.lit("out of scope: gender "), F.coalesce(F.col("m.info.gender"), F.lit("missing"))))
+        .when(~F.coalesce(in_scope, F.lit(False)), F.concat(F.lit("out of scope: "), event))
         .when(F.col(REG).isNull(), F.lit("no player registry"))
         .when(F.col("m.info.teams").isNull() | (F.size("m.info.teams") != 2), F.lit("teams missing"))
     )
@@ -198,7 +213,8 @@ def build_players(spark: SparkSession, t: Tables) -> DataFrame:
 
 # ------------------------------------------------------------------ writing
 
-def build_silver(spark: SparkSession, t: Tables, run_id: str) -> dict:
+def build_silver(spark: SparkSession, t: Tables, run_id: str,
+                 club_events: Sequence[str] = IN_SCOPE_CLUB_EVENTS) -> dict:
     """Process pending Bronze files into Silver. Returns counts for the notebook to show."""
     # Fix the batch first: everything below must see the same set of files.
     batch = pending_files(spark, t).select("file_name", "file_hash")
@@ -206,7 +222,7 @@ def build_silver(spark: SparkSession, t: Tables, run_id: str) -> dict:
     if not batch_rows:
         return {"parsed": 0, "quarantined": 0}
     batch = spark.createDataFrame(batch_rows, "file_name string, file_hash string")
-    parsed = parse(spark.table(t.bronze_files).join(batch, ["file_name", "file_hash"]))
+    parsed = parse(spark.table(t.bronze_files).join(batch, ["file_name", "file_hash"]), club_events)
     ok = parsed.filter(F.col("quarantine_reason").isNull())
 
     ids = ok.select("match_id").distinct()
