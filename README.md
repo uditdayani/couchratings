@@ -4,7 +4,7 @@ Sofascore-style 0–10 match ratings and form ratings for T20 cricketers, built 
 
 **Status:** V1 complete – daily pipeline, validated ratings, live dashboard.
 
-**Live dashboard:** 
+**Live dashboard:** _add your Streamlit link here_
 
 ## Architecture
 
@@ -71,6 +71,7 @@ scripts/download_cricsheet.py  Local fallback download
 | Gold | `gold.player_match_impact` | (model version, match, player): batting, bowling and fielding impact in runs, plus counting stats |
 | Gold | `gold.player_match_ratings` | (model version, match, player): 0–10 rating, percentile within competition, impact and stats |
 | Gold | `gold.player_form` | (model version, scope, player): form rating, matches counted, leaderboard rank; scope is "All" or a competition |
+| Gold | `gold.par_rates` | (model version, over, wickets-down band): typical bowler's runs and wickets per legal ball |
 | Gold | `gold.model_versions` | model version: when and how it was fitted |
 | Ops | `ops.ingest_log` | file processed at each stage (landed, parsed, quarantined) |
 | Ops | `ops.validation_results` | validation check result per model version and run |
@@ -156,7 +157,7 @@ A four-page Streamlit app (`app/`), deployed on Streamlit Community Cloud with m
 | --- | --- |
 | Form leaderboard | Top players by form, overall or per competition; click a row to open the player |
 | Player | Current form, average and best rating, last 20 ratings as a colour-banded chart, where the impact comes from, and a match log; click a match to open it |
-| Match | Score, result, and both teams' players rated with their batting, bowling (with par: what an average bowler would concede off the same balls) and fielding lines; the official player of the match is starred |
+| Match | Score, result, and both teams' players rated with their batting, bowling (with par: the wickets/runs a typical bowler gets from the same overs with the same wickets down, e.g. `1/34 (4.0) · par 1.2/31`) and fielding lines; the official player of the match is starred |
 | About | Method, rating bands, model version, latest data, live validation results and known limitations |
 
 Each Gold table is read once from the SQL warehouse and cached for 12 hours, so pages respond instantly and the warehouse is barely used. Player and match pages have shareable links (`?player=…`, `?match=…`).
