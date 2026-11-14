@@ -70,6 +70,10 @@ class Tables:
         return self._t("gold", "player_form")
 
     @property
+    def gold_par_rates(self) -> str:
+        return self._t("gold", "par_rates")
+
+    @property
     def gold_venue_factors(self) -> str:
         return self._t("gold", "venue_factors")
 
