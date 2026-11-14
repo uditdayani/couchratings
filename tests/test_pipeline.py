@@ -16,7 +16,7 @@ def land_and_build(spark, t, json_root, new_run_id):
     rid = new_run_id()
     incoming = bronze.read_raw_files(spark, f"{json_root}/*/*.json", rid)
     landed = bronze.land(spark, t, incoming, rid)
-    counts = silver.build_silver(spark, t, new_run_id())
+    counts = silver.build_silver(spark, t, new_run_id(), club_events=("Test League",))
     return landed, counts
 
 
@@ -42,6 +42,17 @@ def test_extract_zip_skips_readme_and_paths(tmp_path):
     out = tmp_path / "out"
     assert bronze.extract_zip(str(zpath), str(out)) == 1
     assert os.listdir(out) == ["1000001.json"]
+
+
+def test_extract_zip_can_clear_old_files(tmp_path):
+    zpath = tmp_path / "recent_male_json.zip"
+    with zipfile.ZipFile(zpath, "w") as z:
+        z.writestr("2000001.json", "{}")
+    out = tmp_path / "recent_male"
+    out.mkdir()
+    (out / "1999999.json").write_text("{}")                  # yesterday's file
+    assert bronze.extract_zip(str(zpath), str(out), clear=True) == 1
+    assert os.listdir(out) == ["2000001.json"]
 
 
 def test_bronze_lands_every_file_once(spark, built):
@@ -88,6 +99,17 @@ def test_bad_files_are_quarantined_with_reason(spark, built):
     q = rows(spark, t.ingest_log, "stage = 'silver' AND status = 'quarantined'")
     assert {r["match_id"]: r["detail"] for r in q} == {
         "1000004": "match_type is ODI", "1000005": "unparseable JSON"}
+
+
+def test_out_of_scope_matches_are_quarantined(spark, tables, json_root, run_id):
+    write_fixture_files(json_root)
+    bronze.ensure_tables(spark, tables)
+    rid = run_id()
+    bronze.land(spark, tables, bronze.read_raw_files(spark, f"{json_root}/*/*.json", rid), rid)
+    counts = silver.build_silver(spark, tables, run_id())        # default scope: IPL + internationals
+    assert counts == {"parsed": 0, "quarantined": 5}
+    reasons = {r["match_id"]: r["detail"] for r in rows(spark, tables.ingest_log, "stage = 'silver'")}
+    assert reasons["1000001"] == "out of scope: Test League"
 
 
 def test_matches_outcomes(spark, built):
