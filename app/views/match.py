@@ -5,7 +5,7 @@ import streamlit as st
 import data
 import ui
 
-ratings, matches = data.load("ratings"), data.load("matches")
+ratings, matches, par = data.load("ratings"), data.load("matches"), data.load("bowling_par")
 comp_of = ratings.drop_duplicates("match_id").set_index("match_id")["competition"]
 matches = matches.assign(competition=matches["match_id"].map(comp_of)).sort_values("match_date", ascending=False)
 if matches.empty:
@@ -39,6 +39,10 @@ s2.metric(str(m["inn2_team"] or ""), ui.score_line(m["inn2_runs"], m["inn2_wicke
 st.markdown(f"**{ui.result_line(m)}**")
 
 players = ratings[ratings["match_id"] == mid].copy()
+if not par.empty:
+    players = players.merge(par[par["match_id"] == mid][["player_id", "bowling_par"]], on="player_id", how="left")
+else:
+    players["bowling_par"] = None
 pom_ids = set(m["player_of_match_ids"]) if m["player_of_match_ids"] is not None else set()
 top = players[players["involved"]].sort_values(["rating", "total_impact"], ascending=False).head(1)
 notes = []
@@ -59,10 +63,12 @@ for col, team in zip(cols, [m["team_1"], m["team_2"]]):
         "Player": [n + (" ★" if p in pom_ids else "") for n, p in zip(side["name"], side["player_id"])],
         "Rating": side["rating"].values,
         "Batting": [ui.batting_line(*x) for x in zip(side["runs"], side["balls_faced"], side["dismissed"])],
-        "Bowling": [ui.bowling_line(*x) for x in zip(side["wickets"], side["runs_conceded"], side["balls_bowled"])],
+        "Bowling": [ui.bowling_with_par(*x) for x in zip(side["wickets"], side["runs_conceded"],
+                                                         side["balls_bowled"], side["bowling_par"])],
         "Fielding": [ui.fielding_line(*x) for x in zip(side["catches"], side["stumpings"], side["run_outs"])],
     })
     with col:
         st.subheader(team)
         st.dataframe(ui.style_ratings(table), hide_index=True, use_container_width=True)
-st.caption("★ official player of the match · \"–\" too little involvement to rate")
+st.caption("★ official player of the match · \"–\" too little involvement to rate · "
+           "par = runs an average bowler would concede off the same balls, in the same match situations")
