@@ -9,6 +9,7 @@
 # MAGIC | `gold.run_expectancy` | Expected runs to the end of the innings for every (balls left, wickets down) state |
 # MAGIC | `gold.environment_factors` | How high-scoring each competition was each year (IPL 2025, T20I 2024, …) |
 # MAGIC | `gold.venue_factors` | How high-scoring each ground is *within its competition* |
+# MAGIC | `gold.par_rates` | What a typical bowler concedes and takes per ball, by over and wickets down |
 # MAGIC | `gold.model_versions` | When and how each version was fitted |
 # MAGIC
 # MAGIC Expected runs in a match = RE(balls left, wickets) × environment factor × venue factor.
@@ -127,3 +128,18 @@ display(spark.sql(f"""
     UNION ALL
     (SELECT 'lowest', venue, matches, runs_per_over, factor FROM {t.gold_venue_factors}
      WHERE version = '{VERSION}' AND matches >= 10 ORDER BY factor ASC LIMIT 10)"""))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Bowling par: economy and wickets by over
+# MAGIC Runs per over (wides and no-balls included) and wickets per over a typical bowler gets,
+# MAGIC before competition, season and ground adjustments. Economy should climb towards the death.
+
+# COMMAND ----------
+
+display(spark.sql(f"""
+    SELECT over_no, wickets_band, legal_balls,
+           round(runs_per_ball * 6, 2) AS economy, round(wickets_per_ball * 6, 3) AS wickets_per_over
+    FROM {t.gold_par_rates} WHERE version = '{VERSION}'
+    ORDER BY wickets_band, over_no"""))
