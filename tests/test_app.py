@@ -32,8 +32,9 @@ def test_scorecard_lines():
     assert ui.bowling_line(2, 24, 24) == "2/24 (4.0)"
     assert ui.bowling_line(1, 30, 22) == "1/30 (3.4)"
     assert ui.bowling_line(0, 0, 0) == ""
-    assert ui.bowling_with_par(0, 43, 21, 38.2) == "0/43 (3.3) · par 38"
-    assert ui.bowling_with_par(0, 0, 0, None) == ""
+    assert ui.bowling_with_par(1, 34, 24, 31.2, 1.18) == "1/34 (4.0) · par 1.2/31"
+    assert ui.bowling_with_par(1, 34, 24, None, None) == "1/34 (4.0)"     # built before par existed
+    assert ui.bowling_with_par(0, 0, 0, None, None) == ""
     assert ui.fielding_line(2, 0, 1) == "2 ct, 1 ro"
     assert ui.score_line(187, 4, 120) == "187/4 (20.0 ov)"
     assert ui.score_line(143, 10, 112) == "143 (18.4 ov)"        # all out
