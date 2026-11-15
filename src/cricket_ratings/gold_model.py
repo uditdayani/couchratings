@@ -96,31 +96,31 @@ def raw_cells(obs: DataFrame) -> pd.DataFrame:
 
 # --------------------------------------------------------------- smoothing
 
-def _local_linear(b: int, xs: np.ndarray, ns: np.ndarray, sums: np.ndarray) -> Optional[float]:
-    """Value at `b` of the straight line through the cells' means, weighted by sample size.
-    None when fewer than two cells have data (a line needs two points)."""
-    has = ns > 0
-    if has.sum() < 2:
-        return None
-    x, w, y = xs[has] - b, ns[has], sums[has] / ns[has]
-    sw, sx, sy = w.sum(), (w * x).sum(), (w * y).sum()
-    sxx, sxy = (w * x * x).sum(), (w * x * y).sum()
-    denom = sw * sxx - sx * sx
-    return float((sxx * sy - sx * sxy) / denom) if denom > 0 else None
+K_GRID = np.geomspace(1e-4, 0.5, 2000)   # curve steepness values tried when fitting
 
 
-def smooth_re(raw: pd.DataFrame, min_samples: int = 50, max_window: int = 12) -> pd.DataFrame:
+def fit_curve(balls: np.ndarray, means: np.ndarray, weights: np.ndarray) -> tuple:
+    """Fit RE(b) = Z0 x (1 - exp(-k b)) by weighted least squares: the shape of a
+    Duckworth-Lewis resource curve (rises with balls left, levels off). For each k on a
+    fine grid, Z0 has a closed form; the k with the smallest error wins. Returns (Z0, k)."""
+    f = 1.0 - np.exp(-np.outer(K_GRID, balls))                    # (k values) x (cells)
+    denom = (weights * f * f).sum(axis=1)
+    z0 = np.where(denom > 0, (weights * f * means).sum(axis=1) / np.where(denom > 0, denom, 1), 0.0)
+    sse = (weights * (means - z0[:, None] * f) ** 2).sum(axis=1)
+    best = int(np.argmin(sse))
+    return float(z0[best]), float(K_GRID[best])
+
+
+def smooth_re(raw: pd.DataFrame, min_samples: int = 50) -> pd.DataFrame:
     """Turn raw cell averages into a complete, smooth, sensible RE table.
 
-    1. Pool: a cell with fewer than `min_samples` innings borrows from neighbouring
-       balls-left cells (same wickets), widening up to +/-`max_window` balls. It fits a
-       weighted straight line through them rather than averaging, so neighbours on
-       only one side (a gap, or the 120-ball edge) don't drag the estimate.
-    2. Interpolate: cells still empty are interpolated along balls left, anchored
-       at 0 runs with 0 balls left (beyond the last observed cell, held flat).
-    3. Make it monotone: more balls left never means fewer runs, and more wickets
-       down never means more runs.
-    Terminal states (0 balls left, or 10 wickets) are exactly 0.
+    1. Curve: for each wickets-down level, fit a Duckworth-Lewis-style curve
+       Z0 x (1 - exp(-k x balls left)) to that level's cells, weighted by sample size.
+    2. Blend: each cell's value = (n x cell average + min_samples x curve) / (n + min_samples).
+       Well-observed cells keep their own data, thin cells lean on the curve and empty
+       cells follow it, so rare states (e.g. 5 down with 100 balls left) have no cliffs.
+    3. Make it monotone: more balls left never means fewer runs, and more wickets down
+       never means more runs. Terminal states (0 balls left, or 10 wickets) are exactly 0.
     """
     balls = np.arange(TOTAL_BALLS + 1)
     n = np.zeros((TOTAL_BALLS + 1, MAX_WICKETS))
@@ -130,25 +130,26 @@ def smooth_re(raw: pd.DataFrame, min_samples: int = 50, max_window: int = 12) ->
             n[r.balls_left, r.wickets] += r.n
             s[r.balls_left, r.wickets] += r.runs_sum
 
-    est = np.full(n.shape, np.nan)
-    method = np.full(n.shape, "interpolated", dtype=object)
+    est = np.zeros(n.shape)
+    method = np.full(n.shape, "curve", dtype=object)
+    curves = []
     for w in range(MAX_WICKETS):
-        for b in range(1, TOTAL_BALLS + 1):
-            if n[b, w] >= min_samples:
-                est[b, w], method[b, w] = s[b, w] / n[b, w], "observed"
-                continue
-            for h in range(1, max_window + 1):
-                lo, hi = max(1, b - h), min(TOTAL_BALLS, b + h)
-                fit = _local_linear(b, np.arange(lo, hi + 1), n[lo:hi + 1, w], s[lo:hi + 1, w])
-                if fit is not None and n[lo:hi + 1, w].sum() >= min_samples:
-                    est[b, w], method[b, w] = fit, "pooled"
-                    break
-        known = ~np.isnan(est[:, w])
-        known[0] = True
+        has = n[1:, w] > 0
+        bs = balls[1:][has]
+        if has.sum() >= 2:
+            z0, k = fit_curve(bs, s[1:, w][has] / n[1:, w][has], n[1:, w][has])
+        elif curves:
+            z0, k = curves[-1]                                       # borrow the previous level's curve
+        else:
+            z0, k = 0.0, 0.01
+        curves.append((z0, k))
+        curve = z0 * (1.0 - np.exp(-k * balls))
+        mean = np.divide(s[:, w], n[:, w], out=np.zeros(len(balls)), where=n[:, w] > 0)
+        est[:, w] = (n[:, w] * mean + min_samples * curve) / (n[:, w] + min_samples)
+        method[:, w] = np.where(n[:, w] >= min_samples, "observed", np.where(n[:, w] > 0, "blended", "curve"))
         est[0, w] = 0.0
-        est[:, w] = np.interp(balls, balls[known], est[known, w])
-        est[:, w] = np.maximum.accumulate(est[:, w])          # non-decreasing in balls left
-    est = np.minimum.accumulate(est, axis=1)                   # non-increasing in wickets
+        est[:, w] = np.maximum.accumulate(est[:, w])            # non-decreasing in balls left
+    est = np.minimum.accumulate(est, axis=1)                    # non-increasing in wickets
     method[0, :] = "terminal"
 
     rows = [{"balls_left": int(b), "wickets": int(w), "expected_runs": round(float(est[b, w]), 3),
@@ -275,7 +276,7 @@ def par_rates(spark: SparkSession, t: Tables, matches: DataFrame) -> DataFrame:
 # --------------------------------------------------------------------- fit
 
 def fit_model(spark: SparkSession, t: Tables, version: str, min_date: Optional[str] = None,
-              min_samples: int = 50, max_window: int = 12, venue_prior_matches: int = 10,
+              min_samples: int = 50, venue_prior_matches: int = 10,
               environment_prior_matches: int = 5, notes: str = "") -> dict:
     """Fit RE, environment and venue factors and store them under `version`
     (re-fitting replaces it).
@@ -287,7 +288,7 @@ def fit_model(spark: SparkSession, t: Tables, version: str, min_date: Optional[s
     stats = fit_matches.agg(F.count("*").alias("n"), F.min("match_date").alias("first"),
                             F.max("match_date").alias("last")).first()
 
-    re_pdf = smooth_re(raw_cells(re_observations(spark, t, fit_matches)), min_samples, max_window)
+    re_pdf = smooth_re(raw_cells(re_observations(spark, t, fit_matches)), min_samples)
     re_df = spark.createDataFrame(re_pdf).withColumn("version", F.lit(version))
     storage.replace_rows(spark, t.gold_run_expectancy, re_df, re_df, "version")
 
@@ -302,7 +303,8 @@ def fit_model(spark: SparkSession, t: Tables, version: str, min_date: Optional[s
     par = par_rates(spark, t, fit_matches).withColumn("version", F.lit(version))
     storage.replace_rows(spark, t.gold_par_rates, par, one_version, "version")
 
-    params = {"min_date": min_date, "min_samples": min_samples, "max_window": max_window,
+    params = {"min_date": min_date, "min_samples": min_samples,
+              "re_smoothing": "curve per wickets level, blended with cell averages",
               "venue_prior_matches": venue_prior_matches,
               "environment_prior_matches": environment_prior_matches,
               "environment_basis": "avg first-innings total / RE(120, 0), shrunk to competition level",
