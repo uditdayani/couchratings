@@ -10,30 +10,46 @@ from test_pipeline import built  # noqa: F401  (reuses the fixture that lands + 
 
 # ---------------------------------------------------------- smoothing (pure pandas)
 
+Z0 = [220, 190, 165, 140, 115, 90, 68, 48, 30, 15]          # runs a side could still add, by wickets down
+
+
 def truth(b, w):
-    return b * (1.4 - 0.1 * w)   # known answer: linear in balls left, lower with wickets
+    """A known, Duckworth-Lewis-shaped answer: rises with balls left and levels off."""
+    return Z0[w] * (1 - np.exp(-(0.015 + 0.002 * w) * b))
+
+
+def make_raw(cells, outliers=None):
+    outliers = outliers or {}
+    return pd.DataFrame([{"balls_left": b, "wickets": w, "n": n,
+                          "runs_sum": (truth(b, w) + outliers.get((b, w), 0.0)) * n}
+                         for (b, w), n in cells.items()])
 
 
 @pytest.fixture(scope="module")
 def smoothed():
     cells = {}
-    for w in range(0, 4):                         # dense with plenty of balls left
+    for w in range(0, 4):                         # few wickets down: data from 60 to 120 balls left
         for b in range(60, 121):
             cells[(b, w)] = 200
-    for b in range(1, 60):                        # wicketless, few balls left...
-        if b not in (5, 6, 7, 8):                 # ...with a gap to interpolate
+    for b in range(1, 60):                        # wicketless near the end, with a gap at 5-8
+        if b not in (5, 6, 7, 8):
             cells[(b, 0)] = 100
-    for w in range(4, 10):                        # dense once wickets have fallen
+    for w in range(4, 10):                        # many down: data only late in the innings
         for b in range(1, 61):
             cells[(b, w)] = 200
-    for b in range(61, 121):                      # 4 down is common at any stage
+    for b in range(61, 111):                      # like real data: 4 down reaches further back...
         cells[(b, 4)] = 200
-    for b in range(61, 81):                       # sparse: needs pooling
-        cells[(b, 5)] = 20
-    raw = pd.DataFrame([{"balls_left": b, "wickets": w, "n": n, "runs_sum": truth(b, w) * n}
-                        for (b, w), n in cells.items()])
-    re = gold_model.smooth_re(raw, min_samples=50, max_window=12)
-    return re.set_index(["balls_left", "wickets"])
+    for b in range(61, 91):                       # ...than 5 down, whose data stops at 90 balls left
+        cells[(b, 5)] = 200
+    cells[(70, 6)] = 10                           # a thin cell with an unlucky average
+    raw = make_raw(cells, outliers={(70, 6): 20.0})
+    return gold_model.smooth_re(raw, min_samples=50).set_index(["balls_left", "wickets"])
+
+
+def test_fit_curve_recovers_a_known_curve():
+    b = np.arange(1, 121)
+    z0, k = gold_model.fit_curve(b, 150 * (1 - np.exp(-0.02 * b)), np.ones(len(b)))
+    assert z0 == pytest.approx(150, rel=0.01) and k == pytest.approx(0.02, rel=0.01)
 
 
 def test_table_is_complete_with_terminal_zeros(smoothed):
@@ -48,42 +64,32 @@ def test_table_is_monotone(smoothed):
     assert (np.diff(grid.values, axis=1) <= 1e-9).all()         # more wickets -> never more runs
 
 
-def test_dense_cells_match_the_data(smoothed):
-    assert smoothed.loc[(120, 0), "expected_runs"] == pytest.approx(168)
-    assert smoothed.loc[(60, 2), "expected_runs"] == pytest.approx(72)
+def test_well_observed_cells_match_the_data(smoothed):
+    for b, w in [(120, 0), (90, 2), (30, 6), (6, 9)]:
+        assert smoothed.loc[(b, w), "expected_runs"] == pytest.approx(truth(b, w), abs=0.5)
     assert smoothed.loc[(120, 0), "method"] == "observed"
 
 
-def test_sparse_cells_are_pooled(smoothed):
-    cell = smoothed.loc[(70, 5)]
-    assert cell["method"] == "pooled" and cell["sample_size"] == 20
-    assert cell["expected_runs"] == pytest.approx(truth(70, 5))
+def test_thin_cells_lean_on_the_curve(smoothed):
+    # 10 innings averaging 20 runs above the truth: (10 x +20) / (10 + 50) = +3.3, not +20.
+    cell = smoothed.loc[(70, 6)]
+    assert cell["method"] == "blended" and cell["sample_size"] == 10
+    assert cell["expected_runs"] == pytest.approx(truth(70, 6) + 20 * 10 / 60, abs=0.6)
 
 
-def test_gaps_are_filled_without_one_sided_bias(smoothed):
-    # Balls 5-8 have no data. The nearest data sits mostly on one side (4 below, 9+ above);
-    # a plain average would be biased, the weighted line is not.
-    cell = smoothed.loc[(6, 0)]
-    assert cell["method"] == "pooled" and cell["sample_size"] == 0
-    assert cell["expected_runs"] == pytest.approx(truth(6, 0))
-    assert smoothed.loc[(119, 2), "expected_runs"] == pytest.approx(truth(119, 2))
+def test_empty_cells_follow_the_curve(smoothed):
+    for b, w in [(6, 0), (100, 5), (120, 9)]:                   # a gap, beyond the data, unreachable
+        assert smoothed.loc[(b, w), "method"] == "curve"
+        assert smoothed.loc[(b, w), "expected_runs"] == pytest.approx(truth(b, w), abs=1.0)
 
 
-def test_interpolates_when_pooling_cannot_reach():
-    raw = pd.DataFrame([{"balls_left": 100, "wickets": 0, "n": 60, "runs_sum": 60 * 140.0}])
-    re = gold_model.smooth_re(raw, min_samples=50, max_window=3).set_index(["balls_left", "wickets"])
-    cell = re.loc[(50, 0)]
-    assert cell["method"] == "interpolated"
-    assert cell["expected_runs"] == pytest.approx(70.0)      # halfway between 0 at 0 balls and 140 at 100
-
-
-def test_unreachable_cells_extend_the_trend_then_hold_flat(smoothed):
-    # 9 down with lots of balls left never happens (data stops at 60 balls). The line
-    # through the last cells carries on while the window still holds two data cells
-    # (up to 71 balls), then the value is held flat - never invented beyond that.
-    assert smoothed.loc[(71, 9), "expected_runs"] == pytest.approx(truth(71, 9))
-    assert smoothed.loc[(100, 9), "expected_runs"] == smoothed.loc[(120, 9), "expected_runs"]
-    assert smoothed.loc[(120, 9), "expected_runs"] == pytest.approx(truth(71, 9))
+def test_no_cliff_where_one_level_runs_out_of_data(smoothed):
+    """Regression (V1, AR Patel 27 Apr 2026): 4 down has data up to 110 balls left, 5 down only
+    up to 90. V1 held 5-down flat beyond its data, so the 4->5 wicket at 104 balls cost 29 runs
+    before scaling. The curve keeps it at the true gap."""
+    gap = smoothed.loc[(104, 4), "expected_runs"] - smoothed.loc[(104, 5), "expected_runs"]
+    assert gap == pytest.approx(truth(104, 4) - truth(104, 5), abs=1.5)
+    assert gap < 25
 
 
 # ------------------------------------------------------ Spark, on the fixture matches
@@ -108,25 +114,25 @@ def test_observations_take_the_first_time_each_state_is_reached(spark, built):  
 def test_fit_model_writes_versioned_tables(spark, built):  # noqa: F811
     t, _, _ = built
     for _ in range(2):   # re-fitting the same version replaces it
-        summary = gold_model.fit_model(spark, t, "v1", min_samples=1, max_window=0)
+        summary = gold_model.fit_model(spark, t, "v1", min_samples=1)
     assert summary["fitted_matches"] == 2
 
     re = spark.table(t.gold_run_expectancy).filter("version = 'v1'")
     assert re.count() == (TOTAL_BALLS + 1) * (MAX_WICKETS + 1)
     cell = lambda b, w: re.filter(f"balls_left = {b} AND wickets = {w}").first()  # noqa: E731
-    assert cell(119, 0)["expected_runs"] == 13
-    # The raw average at 120 balls is (17 + 4) / 2 = 10.5, below the 13 at 119 balls.
-    # More balls can't mean fewer runs, so the monotone step lifts it to 13.
-    assert cell(120, 0)["sample_size"] == 2
-    assert summary["expected_first_innings_total"] == pytest.approx(13)
+    assert cell(120, 0)["sample_size"] == 2                    # both first innings start here
+    start = summary["expected_first_innings_total"]
+    assert start == cell(120, 0)["expected_runs"] and start > 0
 
     venues = spark.table(t.gold_venue_factors).collect()
     assert [(v.venue, v.matches, v.factor) for v in venues] == [("Test Ground", 2, 1.0)]
     env = spark.table(t.gold_environment_factors).collect()
-    # Average first-innings total 10.5 vs RE(120, 0) = 13: raw 0.8077. With 2 matches it is
-    # pulled towards the competition level (itself pulled towards 1.0): 0.9451 + 2/7 x (0.8077 - 0.9451).
+    # Average first-innings total 10.5 vs RE(120, 0): with 2 matches the raw factor is pulled
+    # towards the competition level, itself pulled towards 1.0 (prior 5 matches).
+    raw = 10.5 / start
+    level = 1 + 2 / 7 * (raw - 1)
     assert [(e.competition, e.year, e.matches) for e in env] == [("Test League", 2025, 2)]
-    assert env[0].factor == pytest.approx(0.9058, abs=1e-4)
+    assert env[0].factor == pytest.approx(level + 2 / 7 * (raw - level), abs=1e-3)
     assert spark.table(t.gold_model_versions).count() == 1
 
 
