@@ -23,11 +23,13 @@ from cricket_ratings import gold_scale
 from cricket_ratings.config import Tables
 
 dbutils.widgets.text("catalog", "workspace")
-dbutils.widgets.text("model_version", "v2")
+dbutils.widgets.text("model_version", "v3")
+dbutils.widgets.text("secondary_balls_k", str(gold_scale.SECONDARY_BALLS_K))  # higher = an all-rounder's smaller part counts less
 t = Tables(catalog=dbutils.widgets.get("catalog"))
 VERSION = dbutils.widgets.get("model_version")
+SECONDARY_K = float(dbutils.widgets.get("secondary_balls_k"))
 
-summary = gold_scale.run_scale(spark, t, VERSION)
+summary = gold_scale.run_scale(spark, t, VERSION, SECONDARY_K)
 summary
 
 # COMMAND ----------
