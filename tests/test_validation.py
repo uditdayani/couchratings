@@ -101,14 +101,35 @@ def test_scale_passes_on_real_ratings_and_fails_on_bunched_ones(spark):
     assert not r[("median_rating", "Bunched")]["passed"] and not r[("pct_9_3_plus", "Bunched")]["passed"]
 
 
-def test_role_balance(spark):
-    rows = [("Even", 9.5, 30.0, 0.0)] * 6 + [("Even", 9.5, 0.0, 30.0)] * 4 \
-         + [("Batting only", 9.5, 30.0, 0.0)] * 10
-    r = by_scope(validation.role_balance(spark.createDataFrame(
-        rows, "competition string, rating double, batting double, bowling double")))
-    assert r[("pct_9_plus_mainly_bowling", "Even")]["value"] == 40.0
-    assert r[("pct_9_plus_mainly_bowling", "Even")]["passed"]
-    assert not r[("pct_9_plus_mainly_bowling", "Batting only")]["passed"]
+ROLE_RATING_COLS = ("competition string, rating double, batting double, bowling double, involved boolean, "
+                    "balls_bowled int, balls_faced int, dismissed int")
+
+
+def test_role_balance_against_fair_share(spark):
+    # 40 spells and 60 innings: bowling's fair share of 9+ is 40%.
+    base = [("Fair", 6.5, 0.0, 5.0, True, 24, 0, 0)] * 36 + [("Fair", 6.5, 5.0, 0.0, True, 0, 20, 1)] * 54
+    fair = base + [("Fair", 9.5, 0.0, 30.0, True, 24, 0, 0)] * 4 + [("Fair", 9.5, 30.0, 0.0, True, 0, 20, 1)] * 6
+    heavy = [("Heavy",) + x[1:] for x in base] + [("Heavy", 9.5, 0.0, 30.0, True, 24, 0, 0)] * 7 \
+        + [("Heavy", 9.5, 30.0, 0.0, True, 0, 20, 1)] * 3
+    r = by_scope(validation.role_balance(spark.createDataFrame(fair + heavy, ROLE_RATING_COLS)))
+    assert r[("pct_9_plus_mainly_bowling", "Fair")]["value"] == 40.0
+    assert r[("pct_9_plus_mainly_bowling", "Fair")]["passed"]
+    assert "fair share 40.0%" in r[("pct_9_plus_mainly_bowling", "Fair")]["target"]
+    assert not r[("pct_9_plus_mainly_bowling", "Heavy")]["passed"]     # 70% vs a fair 40%
+
+
+def test_both_roles(spark):
+    bat = ("Even", 6.5, 5.0, 0.0, True, 0, 20, 1)
+    both = ("Even", 6.5, 5.0, 2.0, True, 12, 10, 1)
+    def comp(name, top_both, low_both):
+        rows = [(name,) + bat[1:]] * 60 + [(name,) + both[1:]] * 20               # 25% did both
+        rows += [(name, 9.5) + both[2:]] * top_both + [(name, 9.5) + bat[2:]] * (10 - top_both)
+        rows += [(name, 3.5) + both[2:]] * low_both + [(name, 3.5) + bat[2:]] * (10 - low_both)
+        return rows
+    r = by_scope(validation.both_roles(spark.createDataFrame(
+        comp("Even", 3, 3) + comp("Crowded", 6, 5), ROLE_RATING_COLS)))
+    assert r[("both_roles_extremes_ratio", "Even")]["passed"]                  # 30% / 26% ~ 1.15
+    assert not r[("both_roles_extremes_ratio", "Crowded")]["passed"]           # 60% / 30% = 2
 
 
 def test_player_of_match(spark):
