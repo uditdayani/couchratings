@@ -37,7 +37,12 @@ NUMBERS = {  # every credit row carries all of these
     "balls_bowled": "int", "runs_conceded": "int", "wickets": "int",
     "catches": "int", "stumpings": "int", "run_outs": "int",
     "par_runs_conceded": "double", "par_wickets": "double",
+    "byes_conceded": "int",
 }
+
+# When a batter came in, by balls left in the innings at their first ball (as striker or
+# non-striker). Ratings rank batting against batters from the same stage.
+STAGES = ("opener", "top order", "middle order", "finisher")
 
 
 def _lookup(mapping: dict, key: Column) -> Column:
@@ -64,6 +69,8 @@ def rated_matches(spark: SparkSession, t: Tables) -> DataFrame:
         F.year("match_date").alias("year"),
         F.trim(F.element_at(F.split("venue", ","), 1)).alias("venue"),
         allotted_balls(F.col("target_overs"), F.col("overs_limit"), F.col("balls_per_over")).alias("allotted"),
+        F.least(F.coalesce(F.col("overs_limit"), F.lit(20)) * F.coalesce(F.col("balls_per_over"), F.lit(6)),
+                F.lit(TOTAL_BALLS)).cast("int").alias("full_balls"),
     )
 
 
@@ -79,10 +86,23 @@ def ball_values(deliveries: DataFrame, rated: DataFrame, re: DataFrame,
     def clamp(c, hi):
         return F.greatest(F.least(c, F.lit(hi)), F.lit(0)).cast("int")
 
+    # Balls each innings could last. The second innings uses the (possibly revised) target
+    # overs. The first innings keeps the full length if it was completed or bowled out, and
+    # only uses the reduced length if it was itself cut short: a reduction made during the
+    # chase must not shorten an innings that already ran its full course.
+    whole_innings = Window.partitionBy("match_id", "innings_no")
+    d = (d.withColumn("innings_balls", F.max("legal_ball_no").over(whole_innings))
+          .withColumn("innings_wickets", F.sum("dismissals").over(whole_innings)))
+    completed = (F.col("innings_balls") >= F.col("full_balls")) | (F.col("innings_wickets") >= MAX_WICKETS)
+    first_innings = F.when(completed, F.col("full_balls")).otherwise(
+        F.least(F.greatest(F.col("allotted"), F.col("innings_balls")), F.col("full_balls")))
+    d = d.withColumn("innings_allotted",
+                     F.when(F.col("innings_no") == 1, first_innings).otherwise(F.col("allotted")).cast("int"))
+
     d = (d.withColumn("w_before", clamp(F.coalesce(F.sum("dismissals").over(before), F.lit(0)), MAX_WICKETS))
           .withColumn("w_after", clamp(F.col("w_before") + F.col("dismissals"), MAX_WICKETS))
-          .withColumn("b_before", clamp(F.col("allotted") - (F.col("legal_ball_no") - legal), TOTAL_BALLS))
-          .withColumn("b_after", clamp(F.col("allotted") - F.col("legal_ball_no"), TOTAL_BALLS)))
+          .withColumn("b_before", clamp(F.col("innings_allotted") - (F.col("legal_ball_no") - legal), TOTAL_BALLS))
+          .withColumn("b_after", clamp(F.col("innings_allotted") - F.col("legal_ball_no"), TOTAL_BALLS)))
 
     d = (d.join(F.broadcast(env.select("competition", "year", F.col("factor").alias("env_factor"))),
                 ["competition", "year"], "left")
@@ -109,7 +129,7 @@ def ball_values(deliveries: DataFrame, rated: DataFrame, re: DataFrame,
 
     e0, e1, e2 = (F.col(c) * F.col("scale") for c in ("re0", "re1", "re2"))
     return d.select(
-        "match_id", "innings_no", "seq", "competition", "year", "venue",
+        "match_id", "innings_no", "seq", "competition", "year", "venue", "batting_team",
         "batter_id", "non_striker_id", "bowler_id", "is_legal",
         "runs_batter", "runs_extras", "runs_total", "extras_wides", "extras_noballs",
         "extras_byes", "extras_legbyes", "wickets", "dismissals",
@@ -129,6 +149,45 @@ def _credit(df: DataFrame, player: Column, **values: Column) -> DataFrame:
     cols = [F.coalesce(values.get(name, F.lit(0)), F.lit(0)).cast(kind).alias(name)
             for name, kind in NUMBERS.items()]
     return df.select("match_id", player.alias("player_id"), *cols)
+
+
+def batting_stages(bv: DataFrame) -> DataFrame:
+    """(match_id, player_id, batting_stage) for everyone who came out to bat: "opener" if
+    there at the first ball, else by balls left at entry: >60 "top order" (in before over 11),
+    >30 "middle order" (overs 11-15), otherwise "finisher" (last 5 overs)."""
+    appear = (bv.select("match_id", "innings_no", "seq", "b_before", F.col("batter_id").alias("player_id"))
+              .unionByName(bv.select("match_id", "innings_no", "seq", "b_before",
+                                     F.col("non_striker_id").alias("player_id")))
+              .filter(F.col("player_id").isNotNull()))
+    first = appear.groupBy("match_id", "innings_no", "player_id").agg(
+        F.min("seq").alias("first_seq"), F.min_by("b_before", "seq").alias("balls_left_at_entry"))
+    stage = (F.when(F.col("first_seq") == 1, F.lit(STAGES[0]))
+             .when(F.col("balls_left_at_entry") > 60, F.lit(STAGES[1]))
+             .when(F.col("balls_left_at_entry") > 30, F.lit(STAGES[2]))
+             .otherwise(F.lit(STAGES[3])))
+    # A player bats once per match in innings 1-2; keep the earliest appearance if ever twice.
+    w = Window.partitionBy("match_id", "player_id").orderBy("innings_no")
+    return (first.withColumn("batting_stage", stage).withColumn("_rn", F.row_number().over(w))
+            .filter("_rn = 1").select("match_id", "player_id", "batting_stage"))
+
+
+def keeper_byes(bv: DataFrame, match_players: DataFrame) -> DataFrame:
+    """Charge byes to the fielding side's wicketkeeper: credit rows with fielding = -byes.
+    Cricsheet doesn't say who kept wicket, so the keeper is the fielding XI's player with the
+    most career stumpings (needs at least one; otherwise the byes are charged to nobody)."""
+    stumpers = (bv.filter("dismissals > 0").select(F.explode("wickets").alias("wk"))
+                .filter(F.col("wk.kind") == "stumped")
+                .select(F.explode("wk.fielder_ids").alias("player_id"))
+                .groupBy("player_id").agg(F.count("*").alias("career_stumpings")))
+    byes = (bv.groupBy("match_id", "batting_team").agg(F.sum("extras_byes").alias("byes"))
+            .filter("byes > 0"))
+    fielding_xi = (match_players.join(byes, "match_id")
+                   .filter(F.col("team") != F.col("batting_team"))
+                   .join(stumpers, "player_id"))
+    best = Window.partitionBy("match_id", "batting_team").orderBy(F.col("career_stumpings").desc(),
+                                                                  F.col("player_id"))
+    keeper = fielding_xi.withColumn("_rn", F.row_number().over(best)).filter("_rn = 1")
+    return _credit(keeper, F.col("player_id"), fielding=-F.col("byes"), byes_conceded=F.col("byes"))
 
 
 def player_impact(bv: DataFrame, match_players: DataFrame) -> DataFrame:
@@ -163,7 +222,9 @@ def player_impact(bv: DataFrame, match_players: DataFrame) -> DataFrame:
                     stumpings=(kind == "stumped").cast("int"),
                     run_outs=(kind == "run out").cast("int"))
 
-    credits = striker.unionByName(bowler).unionByName(out).unionByName(taker).unionByName(field)
+    keepers = keeper_byes(bv, match_players)
+    credits = (striker.unionByName(bowler).unionByName(out).unionByName(taker)
+               .unionByName(field).unionByName(keepers))
     totals = (credits.filter(F.col("player_id").isNotNull())
               .groupBy("match_id", "player_id")
               .agg(*[F.sum(c).alias(c) for c in NUMBERS]))
@@ -173,9 +234,10 @@ def player_impact(bv: DataFrame, match_players: DataFrame) -> DataFrame:
     filled = full.select(
         "match_id", "player_id", "team",
         *[F.coalesce(F.col(c), F.lit(0)).cast(k).alias(c) for c, k in NUMBERS.items()])
+    filled = filled.join(batting_stages(bv), ["match_id", "player_id"], "left")
     return filled.withColumn(
         "total_impact", F.round(F.col("batting") + F.col("bowling") + F.col("fielding"), 3)
-    ).select("match_id", "player_id", "team",
+    ).select("match_id", "player_id", "team", "batting_stage",
              *[F.round(c, 3).alias(c) if NUMBERS[c] == "double" else c for c in NUMBERS],
              "total_impact")
 
