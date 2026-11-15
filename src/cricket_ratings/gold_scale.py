@@ -6,8 +6,9 @@ full-member T20Is, ...):
   - batting against batters who came in at the same stage (opener, top order, middle
     order, finisher), so a finisher's 20 off 6 competes with other finishers' innings;
   - bowling (an over or more) against other bowling performances.
-Each rank becomes a score on the same scale; a player who batted and bowled gets the two
-combined (scaled so all-rounders aren't automatically more extreme), plus fielding. The
+Each rank becomes a score on the same scale (0 = a typical performance of that kind); a
+player who batted and bowled gets the two added (V2.1.1), so an average spell leaves a
+batter's score unchanged, a good one adds and a poor one subtracts, plus fielding. The
 combined score is ranked within the competition and that percentile is mapped onto fixed
 anchor points, interpolating between them:
 
@@ -99,14 +100,12 @@ def rate(impacts: DataFrame) -> DataFrame:
     # same scale using the competition's spread of impact: about +0.3 for a typical catch.
     spread = inv.groupBy("competition").agg(F.stddev(F.col("level_impact")).alias("_spread"))
 
-    k = F.col("_batted").cast("int") + F.col("_bowled").cast("int")
     extra = F.col("_field") + F.when(F.col("_bowled"), F.lit(0.0)).otherwise(F.col("_bowl"))
     rated = (inv.join(batted, ["match_id", "player_id"], "left")
              .join(bowled, ["match_id", "player_id"], "left")
              .join(spread, "competition", "left")
              .withColumn("score",
-                         (F.coalesce("batting_score", F.lit(0.0)) + F.coalesce("bowling_score", F.lit(0.0)))
-                         / F.sqrt(F.greatest(k, F.lit(1)).cast("double"))
+                         F.coalesce("batting_score", F.lit(0.0)) + F.coalesce("bowling_score", F.lit(0.0))
                          + extra / F.greatest(F.coalesce("_spread", F.lit(1.0)), F.lit(1e-6)) * F.lit(LOGISTIC_SD)))
     by_comp = Window.partitionBy("competition").orderBy("score")
     rated = (rated.withColumn("percentile", F.percent_rank().over(by_comp))
@@ -166,7 +165,7 @@ def _record_params(spark: SparkSession, t: Tables, version: str) -> None:
     params.update({"anchors": ANCHORS, "min_balls_faced": MIN_BALLS_FACED,
                    "min_balls_bowled": MIN_BALLS_BOWLED, "form_matches": FORM_MATCHES,
                    "form_half_life": FORM_HALF_LIFE, "form_min_matches": FORM_MIN_MATCHES,
-                   "rating_scope": "role-relative: batting by entry stage, bowling vs bowling, combined",
+                   "rating_scope": "role-relative: batting by entry stage, bowling vs bowling, added",
                    "rating_rank_value": "total impact / match scoring level (environment x venue)"})
     row["params"] = json.dumps(params)
     schema = spark.table(t.gold_model_versions).schema
