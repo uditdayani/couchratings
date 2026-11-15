@@ -20,7 +20,7 @@ Every T20 player gets a **0–10 rating** for each match, like Sofascore's footb
    Byes count against the wicketkeeper.
 3. Each part of a match is ranked against its own kind, **in the same competition**: an innings against
    innings that began at the same stage (opener, top order, middle order, finisher), a spell against
-   other spells. So a 20 off 6 at the death can outrate a 40 off 29 at the top. All-rounders add both: an average spell changes nothing, a poor one costs.
+   other spells. So a 20 off 6 at the death can outrate a 40 off 29 at the top. All-rounders add both (the smaller part counting partly): an average spell changes nothing, a poor one costs.
 4. That score is mapped to a rating: median 6.5, top 10% 8.0+, top 1% 9.3+, the best ever 10.
 5. **Form** is a weighted average of the last 10 ratings, recent matches counting most.
 
