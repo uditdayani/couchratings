@@ -169,3 +169,19 @@ def test_all_rounders_combine_both_parts(roles):
     star, bat = roles["allround_star"], roles["batter_45"]
     assert star.batting_score == pytest.approx(bat.batting_score, abs=0.05)
     assert star.bowling_score > 2 and star.rating > bat.rating
+
+
+def test_an_average_spell_costs_nothing_and_a_poor_one_costs_its_share(spark):
+    # Maxwell, 145* and two expensive overs (2016): V2.1 divided (bat + bowl) by sqrt(2), so
+    # even an average spell pulled a great innings down. Now the parts add.
+    rows = [role_perf(f"o{i}", "opener", bat=-30 + i * 80 / 60, faced=20) for i in range(61)]
+    rows += [role_perf(f"b{i}", bowl=-40 + i, bowled=24) for i in range(61)]
+    rows += [role_perf("bat_only", "opener", bat=45, faced=20),
+             role_perf("plus_average_spell", "opener", bat=45, bowl=-10, faced=20, bowled=12),
+             role_perf("plus_poor_spell", "opener", bat=45, bowl=-35, faced=20, bowled=12)]
+    r = {x.player_id: x for x in gold_scale.rate(spark.createDataFrame(rows, ROLE_COLS)).collect()}
+    avg, poor, only = r["plus_average_spell"], r["plus_poor_spell"], r["bat_only"]
+    assert abs(avg.bowling_score) < 0.05                       # -10 is the median spell
+    assert avg.score == pytest.approx(only.score, abs=0.05)
+    assert poor.score == pytest.approx(poor.batting_score + poor.bowling_score, abs=0.01)
+    assert poor.rating < only.rating
