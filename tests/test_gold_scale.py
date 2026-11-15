@@ -183,5 +183,18 @@ def test_an_average_spell_costs_nothing_and_a_poor_one_costs_its_share(spark):
     avg, poor, only = r["plus_average_spell"], r["plus_poor_spell"], r["bat_only"]
     assert abs(avg.bowling_score) < 0.05                       # -10 is the median spell
     assert avg.score == pytest.approx(only.score, abs=0.05)
-    assert poor.score == pytest.approx(poor.batting_score + poor.bowling_score, abs=0.01)
+    assert poor.score == pytest.approx(poor.batting_score + poor.bowling_score * 12 / 24, abs=0.01)
     assert poor.rating < only.rating
+
+
+def test_a_small_second_part_counts_partly(spark):
+    # A bowler's great spell, plus a 2-ball duck at the tail: the duck counts 2 / (2 + 12) of
+    # its score. A genuine all-rounder's 20-ball innings counts 20 / 32 next to 24 balls bowled.
+    rows = [role_perf(f"f{i}", "finisher", bat=-6 + i * 16 / 60, faced=6) for i in range(61)]
+    rows += [role_perf(f"b{i}", bowl=-40 + i, bowled=24) for i in range(61)]
+    rows += [role_perf("bowler_only", bowl=15, bowled=24),
+             role_perf("bowler_tail_duck", "finisher", bat=-6, bowl=15, faced=2, bowled=24, dismissed=1)]
+    r = {x.player_id: x for x in gold_scale.rate(spark.createDataFrame(rows, ROLE_COLS)).collect()}
+    duck, only = r["bowler_tail_duck"], r["bowler_only"]
+    assert duck.score == pytest.approx(duck.bowling_score + duck.batting_score * 2 / 14, abs=0.01)
+    assert duck.batting_score < -3 and only.score - duck.score < 0.75   # unweighted, it would cost 3+
