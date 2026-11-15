@@ -9,6 +9,8 @@ full-member T20Is, ...):
 Each rank becomes a score on the same scale (0 = a typical performance of that kind); a
 player who batted and bowled gets the two added (V2.1.1), so an average spell leaves a
 batter's score unchanged, a good one adds and a poor one subtracts, plus fielding. The
+part with fewer balls counts n / (n + 12) of its score, so a bowler's 3-ball tail-end
+innings barely moves his rating while a genuine all-rounder's second part counts most. The
 combined score is ranked within the competition and that percentile is mapped onto fixed
 anchor points, interpolating between them:
 
@@ -56,6 +58,7 @@ def anchor_rating(p: Column) -> Column:
     return expr.otherwise(F.lit(ANCHORS[-1][1]))
 
 
+SECONDARY_BALLS_K = 12  # second part's weight = balls / (balls + K): 3 balls 0.2, 12 balls 0.5, 24 balls 0.67
 LOGISTIC_SD = 1.8138   # pi / sqrt(3): spread of a logit score, used to put fielding runs on it
 
 
@@ -68,7 +71,7 @@ def _logit_rank(value: Column, partition: list) -> Column:
     return F.log(u / (F.lit(1.0) - u))
 
 
-def rate(impacts: DataFrame) -> DataFrame:
+def rate(impacts: DataFrame, secondary_k: float = SECONDARY_BALLS_K) -> DataFrame:
     """Add `involved`, the component scores, `score`, `percentile` (within competition) and
     `rating` (null if not involved). See the module docstring for the method.
 
@@ -100,12 +103,22 @@ def rate(impacts: DataFrame) -> DataFrame:
     # same scale using the competition's spread of impact: about +0.3 for a typical catch.
     spread = inv.groupBy("competition").agg(F.stddev(F.col("level_impact")).alias("_spread"))
 
+    # Batted and bowled: the part with fewer balls is secondary and counts partly.
+    both = F.col("_batted") & F.col("_bowled")
+    faced, bowled_n = F.col("balls_faced").cast("double"), F.col("balls_bowled").cast("double")
+    bat_secondary = both & (faced < bowled_n)
+    bowl_secondary = both & ~(faced < bowled_n)
+    k2 = F.lit(float(secondary_k))
+    bat_w = F.when(bat_secondary, faced / (faced + k2)).otherwise(F.lit(1.0))
+    bowl_w = F.when(bowl_secondary, bowled_n / (bowled_n + k2)).otherwise(F.lit(1.0))
+
     extra = F.col("_field") + F.when(F.col("_bowled"), F.lit(0.0)).otherwise(F.col("_bowl"))
     rated = (inv.join(batted, ["match_id", "player_id"], "left")
              .join(bowled, ["match_id", "player_id"], "left")
              .join(spread, "competition", "left")
              .withColumn("score",
-                         F.coalesce("batting_score", F.lit(0.0)) + F.coalesce("bowling_score", F.lit(0.0))
+                         F.coalesce(F.col("batting_score") * bat_w, F.lit(0.0))
+                         + F.coalesce(F.col("bowling_score") * bowl_w, F.lit(0.0))
                          + extra / F.greatest(F.coalesce("_spread", F.lit(1.0)), F.lit(1e-6)) * F.lit(LOGISTIC_SD)))
     by_comp = Window.partitionBy("competition").orderBy("score")
     rated = (rated.withColumn("percentile", F.percent_rank().over(by_comp))
@@ -155,7 +168,7 @@ def form(ratings: DataFrame, as_of) -> DataFrame:
              .drop("eligible"))
 
 
-def _record_params(spark: SparkSession, t: Tables, version: str) -> None:
+def _record_params(spark: SparkSession, t: Tables, version: str, secondary_k: float = SECONDARY_BALLS_K) -> None:
     """Add the rating settings to this version's row in gold.model_versions."""
     rows = spark.table(t.gold_model_versions).filter(F.col("version") == version).collect()
     if not rows:
@@ -165,7 +178,8 @@ def _record_params(spark: SparkSession, t: Tables, version: str) -> None:
     params.update({"anchors": ANCHORS, "min_balls_faced": MIN_BALLS_FACED,
                    "min_balls_bowled": MIN_BALLS_BOWLED, "form_matches": FORM_MATCHES,
                    "form_half_life": FORM_HALF_LIFE, "form_min_matches": FORM_MIN_MATCHES,
-                   "rating_scope": "role-relative: batting by entry stage, bowling vs bowling, added",
+                   "rating_scope": "role-relative: batting by entry stage, bowling vs bowling, added; second part weighted balls/(balls+k)",
+                   "secondary_balls_k": secondary_k,
                    "rating_rank_value": "total impact / match scoring level (environment x venue)"})
     row["params"] = json.dumps(params)
     schema = spark.table(t.gold_model_versions).schema
@@ -173,7 +187,7 @@ def _record_params(spark: SparkSession, t: Tables, version: str) -> None:
     storage.replace_rows(spark, t.gold_model_versions, df, df.select("version"), "version")
 
 
-def run_scale(spark: SparkSession, t: Tables, version: str) -> dict:
+def run_scale(spark: SparkSession, t: Tables, version: str, secondary_k: float = SECONDARY_BALLS_K) -> dict:
     """Ratings and form for one model version (re-running replaces it). Needs 06 first."""
     impacts = spark.table(t.gold_player_match_impact).filter(F.col("version") == version).drop("version")
     if impacts.limit(1).count() == 0:
@@ -186,7 +200,7 @@ def run_scale(spark: SparkSession, t: Tables, version: str) -> dict:
                .join(scale, "match_id", "left"))
     key = spark.createDataFrame([(version,)], "version string")
 
-    ratings = rate(impacts.join(context, "match_id")).withColumn("version", F.lit(version))
+    ratings = rate(impacts.join(context, "match_id"), secondary_k).withColumn("version", F.lit(version))
     storage.replace_rows(spark, t.gold_player_match_ratings, ratings, key, "version")
 
     stored = spark.table(t.gold_player_match_ratings).filter(F.col("version") == version)
@@ -194,7 +208,7 @@ def run_scale(spark: SparkSession, t: Tables, version: str) -> dict:
     names = spark.table(t.silver_players).select("player_id", "name")
     f = form(stored, as_of).join(names, "player_id", "left").withColumn("version", F.lit(version))
     storage.replace_rows(spark, t.gold_player_form, f, key, "version")
-    _record_params(spark, t, version)
+    _record_params(spark, t, version, secondary_k)
 
     return {"version": version, "as_of": str(as_of),
             "rated_performances": stored.filter("involved").count(),
