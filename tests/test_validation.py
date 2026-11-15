@@ -117,6 +117,12 @@ def test_role_balance_against_fair_share(spark):
     assert "fair share 40.0%" in r[("pct_9_plus_mainly_bowling", "Fair")]["target"]
     assert not r[("pct_9_plus_mainly_bowling", "Heavy")]["passed"]     # 70% vs a fair 40%
 
+    # A bowler who also faced 2 balls counts as a bowling performance, not as one of each.
+    tail = [("Tail", 6.5, 1.0, 5.0, True, 24, 2, 1)] * 40 + [("Tail", 6.5, 5.0, 0.0, True, 0, 20, 1)] * 60
+    [t] = validation.role_balance(spark.createDataFrame(
+        tail + [("Tail", 9.5, 1.0, 30.0, True, 24, 2, 1)] * 4, ROLE_RATING_COLS))
+    assert "fair share 42.3%" in t["target"]                              # 44 / 104, not 44 / 148
+
 
 def test_both_roles(spark):
     bat = ("Even", 6.5, 5.0, 0.0, True, 0, 20, 1)
