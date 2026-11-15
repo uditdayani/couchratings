@@ -24,6 +24,74 @@ def test_calibration(spark):
     assert ("calibration", "Tiny") not in r
 
 
+def test_rain_calibration(spark):
+    bv = spark.createDataFrame([("r1", 1, 30.0), ("r2", 1, -26.0), ("r3", 1, 40.0), ("n1", 1, 50.0)],
+                               "match_id string, innings_no int, runs_added double")
+    matches = spark.createDataFrame([("r1", "D/L"), ("r2", "D/L"), ("r3", "D/L"), ("n1", None)],
+                                    "match_id string, method string")
+    [r] = validation.rain_calibration(bv, matches)
+    assert r["value"] == pytest.approx(14.67, abs=0.01) and not r["passed"]   # (30 - 26 + 40) / 3
+    [ok] = validation.rain_calibration(bv.filter("match_id != 'r3'"), matches)
+    assert ok["value"] == 2.0 and ok["passed"]                                 # normal match ignored
+
+
+def test_wicket_costs(spark):
+    rows = [(1, -12.0)] * 20000 + [(0, 0.0)] * 5
+    ok = spark.createDataFrame(rows + [(1, -30.0)], "dismissals int, wicket_cost double")
+    [r] = validation.wicket_costs(ok)
+    assert r["passed"] and r["value"] == pytest.approx(0.5, abs=0.01)       # 1 in 20,001
+    bad = spark.createDataFrame(rows + [(1, -38.5)] * 8, "dismissals int, wicket_cost double")
+    [r] = validation.wicket_costs(bad)
+    assert not r["passed"] and "worst -38.5" in r["detail"]
+
+
+def test_era_flatness(spark):
+    import datetime as dt
+    def season(comp, year, pct9, n=1000):
+        k = round(n * pct9 / 100)
+        return [(comp, dt.date(year, 5, 1), True, 9.5)] * k + [(comp, dt.date(year, 5, 1), True, 6.5)] * (n - k)
+    rows = []
+    for y, p in ((2015, 3.0), (2020, 3.5), (2025, 4.0)):
+        rows += season("Flat", y, p)
+    for y, p in ((2015, 2.0), (2020, 3.0), (2025, 5.0)):
+        rows += season("Drifting", y, p)
+    rows += season("Tiny", 2025, 9.0, n=200)                                 # too small: ignored
+    r = by_scope(validation.era_flatness(spark.createDataFrame(
+        rows, "competition string, match_date date, involved boolean, rating double")))
+    assert r[("era_9_plus_range", "Flat")]["passed"] and r[("era_9_plus_range", "Flat")]["value"] == 1.0
+    assert not r[("era_9_plus_range", "Drifting")]["passed"]
+    assert ("era_9_plus_range", "Tiny") not in r
+
+
+RATING_COLS = ("batting_stage string, rating double, involved boolean, balls_bowled int, "
+               "balls_faced int, dismissed int, runs int")
+
+
+def test_stage_balance(spark):
+    import random
+    rnd = random.Random(1)
+    def stage(name, centre, width, n=600):
+        return [(name, min(10.0, max(3.0, centre + rnd.uniform(-width, width))), True, 0, 10, 1, 20)
+                for _ in range(n)]
+    even = stage("opener", 6.5, 3.5) + stage("finisher", 6.5, 3.5)
+    r = by_scope(validation.stage_balance(spark.createDataFrame(even, RATING_COLS)))
+    assert r[("stage_spread_ratio", "All")]["passed"]
+    squeezed = stage("opener", 6.5, 3.5) + stage("finisher", 6.6, 1.2)      # V1-like
+    r = by_scope(validation.stage_balance(spark.createDataFrame(squeezed, RATING_COLS)))
+    assert not r[("stage_spread_ratio", "All")]["passed"]
+    assert not r[("stage_9_plus_ratio", "All")]["passed"]                   # finishers never reach 9
+
+
+def test_cameo_vs_anchor(spark):
+    cameos = [(None, 7.8, True, 0, 6, 1, 20)] * 25
+    anchors = [(None, 7.2, True, 0, 29, 1, 40)] * 25
+    [r] = validation.cameo_vs_anchor(spark.createDataFrame(cameos + anchors, RATING_COLS))
+    assert r["passed"] and r["value"] == 0.6
+    [r] = validation.cameo_vs_anchor(spark.createDataFrame(
+        [(None, 6.0, True, 0, 6, 1, 20)] * 25 + anchors, RATING_COLS))
+    assert not r["passed"]
+
+
 def test_scale_passes_on_real_ratings_and_fails_on_bunched_ones(spark):
     good = gold_scale.rate(spark.createDataFrame(
         [perf(f"m{i}", f"p{i}", "Cup", i) for i in range(1000)], IMPACT_COLS))
@@ -71,7 +139,7 @@ def test_famous_performances_found_missed_and_missing(spark):
 
 def test_run_validation_end_to_end(spark, built):  # noqa: F811
     t, _, _ = built
-    gold_model.fit_model(spark, t, "v1", min_samples=1, max_window=0)
+    gold_model.fit_model(spark, t, "v1", min_samples=1)
     gold_ratings.run_ratings(spark, t, "v1")
     gold_scale.run_scale(spark, t, "v1")
     results, table = validation.run_validation(spark, t, "v1")
