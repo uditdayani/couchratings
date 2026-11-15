@@ -20,6 +20,7 @@ import pytest
 from pyspark.sql import functions as F
 
 from cricket_ratings import gold_model, gold_ratings
+from conftest import rewrite_table
 from cricket_ratings.gold_model import MAX_WICKETS, TOTAL_BALLS
 from test_pipeline import built  # noqa: F401
 
@@ -116,7 +117,7 @@ def test_t20i_split_by_full_members(spark):
 
 def test_run_ratings_end_to_end(spark, built):  # noqa: F811
     t, _, _ = built
-    gold_model.fit_model(spark, t, "v1", min_samples=1, max_window=0)
+    gold_model.fit_model(spark, t, "v1", min_samples=1)
     for _ in range(2):                                                # re-running replaces the version
         summary = gold_ratings.run_ratings(spark, t, "v1")
     assert summary["balls_valued"] == 13 + 2                          # match 1000001 + 1000003 (no super overs)
@@ -130,7 +131,7 @@ def test_par_rates_and_bowler_par(spark, built):  # noqa: F811
     24 runs charged to bowlers (wides and no-balls in, the leg-bye out), 2 bowler wickets
     (a catch and a bowled). Over 2: 2 legal balls, 6 runs, and a run out (not the bowler's)."""
     t, _, _ = built
-    gold_model.fit_model(spark, t, "v1", min_samples=1, max_window=0)
+    gold_model.fit_model(spark, t, "v1", min_samples=1)
     rates = {(r.over_no, r.wickets_band): r for r in
              spark.table(t.gold_par_rates).filter("version = 'v1'").collect()}
     assert set(rates) == {(1, "0-2"), (2, "0-2")}
@@ -148,3 +149,59 @@ def test_par_rates_and_bowler_par(spark, built):  # noqa: F811
     a1 = spark.table(t.gold_player_match_impact).filter(
         f"version = 'v1' AND match_id = '1000001' AND player_id = '{A1}'").first()
     assert a1.par_runs_conceded == pytest.approx(3 * 24 / 11 * scale, abs=0.01)  # 3 balls in innings 2
+
+
+def _starts(spark, t, overs_limit, balls_per_over, target_overs):
+    """First-ball balls-left for each innings of 1000001 after changing its limits."""
+    inn = spark.table(t.silver_innings)
+    rewrite_table(spark, t.silver_innings, inn.withColumn(
+        "target_overs", F.when((F.col("match_id") == "1000001") & (F.col("innings_no") == 2),
+                               F.lit(target_overs)).otherwise(F.col("target_overs"))))
+    m = spark.table(t.silver_matches)
+    mine = F.col("match_id") == "1000001"
+    rewrite_table(spark, t.silver_matches, m
+                  .withColumn("overs_limit", F.when(mine, F.lit(overs_limit)).otherwise(F.col("overs_limit")))
+                  .withColumn("balls_per_over", F.when(mine, F.lit(balls_per_over)).otherwise(F.col("balls_per_over"))))
+    env, venues = factors(spark)
+    bv = gold_ratings.ball_values(spark.table(t.silver_deliveries), gold_ratings.rated_matches(spark, t),
+                                  linear_re(spark), env, venues).filter("match_id = '1000001' AND seq = 1")
+    return {r.innings_no: r.b_before for r in bv.collect()}
+
+
+def test_rain_reduced_chase_does_not_shorten_a_completed_first_innings(spark, built):  # noqa: F811
+    """Regression: a full first innings (8 balls of an 8-ball limit), then rain cuts the
+    chase to 1 over (6 balls). Innings 1 must keep its full 8; the old code used 6 for both,
+    treating the end of innings 1 as "no balls left" and every run there as a free bonus."""
+    t, _, _ = built
+    assert _starts(spark, t, overs_limit=2, balls_per_over=4, target_overs=1.0) == {1: 8, 2: 6}
+
+
+def test_first_innings_cut_short_uses_the_reduced_length(spark, built):  # noqa: F811
+    """A 12-ball limit, innings 1 stops after 8 balls with 2 down (cut short), and the chase
+    target is set over 1.4 overs (10 balls): both innings are treated as 10 balls long."""
+    t, _, _ = built
+    assert _starts(spark, t, overs_limit=2, balls_per_over=6, target_overs=1.4) == {1: 10, 2: 10}
+
+
+def test_batting_stages(spark, built):  # noqa: F811
+    t, _, _ = built
+    bv, _ = impact(spark, t)
+    st = {r.player_id: r.batting_stage for r in
+          gold_ratings.batting_stages(bv).filter("match_id = '1000001'").collect()}
+    # Openers are at the crease for the first ball (striker or non-striker); A3 came in after
+    # A2's dismissal with 117 balls left, B3 at the third ball of the chase: both "top order".
+    assert st == {A1: "opener", A2: "opener", A3: "top order", B1: "opener", B2: "opener", B3: "top order"}
+
+
+def test_byes_are_charged_to_the_keeper(spark):
+    wk = "array<struct<kind:string,player_out_id:string,fielder_ids:array<string>>>"
+    bv = spark.createDataFrame([
+        ("m1", "Y", 0, 1, [("stumped", "y1", ["k1"])]),    # k1 has a career stumping
+        ("m2", "Y", 4, 0, []),                               # Y bat in m2: 4 byes off X's keeper
+        ("m2", "X", 2, 0, []),                               # X bat in m2: Y have no stumper
+    ], f"match_id string, batting_team string, extras_byes int, dismissals int, wickets {wk}")
+    xi = spark.createDataFrame([("m2", "k1", "X"), ("m2", "x2", "X"), ("m2", "y1", "Y")],
+                               "match_id string, player_id string, team string")
+    rows = [(r.match_id, r.player_id, r.fielding, r.byes_conceded)
+            for r in gold_ratings.keeper_byes(bv, xi).collect()]
+    assert rows == [("m2", "k1", -4.0, 4)]
