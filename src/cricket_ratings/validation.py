@@ -178,19 +178,24 @@ def scale(ratings: DataFrame) -> List[dict]:
 
 
 def _roles(ratings: DataFrame) -> DataFrame:
-    return (ratings.filter("involved")
-            .withColumn("_bowled", F.col("balls_bowled") >= 6)
-            .withColumn("_batted", (F.col("balls_faced") > 0) | (F.col("dismissed") > 0)))
+    """Flags per involved performance. When a player batted and bowled, the part with more
+    balls is the main one (as in gold_scale.rate, where the other part counts partly)."""
+    r = (ratings.filter("involved")
+         .withColumn("_bowled", F.col("balls_bowled") >= 6)
+         .withColumn("_batted", (F.col("balls_faced") > 0) | (F.col("dismissed") > 0)))
+    return r.withColumn("_main_bowling", F.col("_bowled") & (~F.col("_batted") | (F.col("balls_faced") < F.col("balls_bowled"))))
 
 
 def role_balance(ratings: DataFrame) -> List[dict]:
     """Bowling's share of 9+ ratings should match its share of performances: with batting
-    ranked against batting and bowling against bowling, any innings or spell (an over or
-    more) should be about equally likely to reach 9. Fair share = spells / (spells + innings)."""
-    r = _roles(ratings)
+    ranked against batting and bowling against bowling, any innings or spell should be about
+    equally likely to reach 9. Each performance counts once, by its main part (the one with
+    more balls), so a bowler's 3-ball tail-end innings isn't counted as a batting chance.
+    Fair share = performances led by bowling / performances led by batting or bowling."""
+    r = _roles(ratings).withColumn("_main_batting", F.col("_batted") & ~F.col("_main_bowling"))
     rows = r.groupBy("competition").agg(
-        F.sum(F.col("_bowled").cast("int")).alias("spells"),
-        F.sum(F.col("_batted").cast("int")).alias("innings"),
+        F.sum(F.col("_main_bowling").cast("int")).alias("spells"),
+        F.sum(F.col("_main_batting").cast("int")).alias("innings"),
         F.sum((F.col("rating") >= 9).cast("int")).alias("n"),
         (100 * F.avg(F.when(F.col("rating") >= 9, (F.col("bowling") > F.col("batting")).cast("double")))).alias("pct"),
     ).orderBy("competition").collect()
