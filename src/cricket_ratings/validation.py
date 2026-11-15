@@ -25,7 +25,8 @@ STAGE_MAX_SHARE_RATIO = 2.0    # highest / lowest share of 9+ (and of 4 or less)
 STAGE_MIN_INNINGS = 500
 MEDIAN_RANGE = (6.2, 6.8)
 TOP_TAIL_RANGE = (0.5, 2.0)     # % of ratings at 9.3+
-ROLE_RANGE = (25.0, 55.0)       # % of 9+ ratings driven mainly by bowling
+ROLE_FAIR_MARGIN = 5.0         # % of 9+ mainly bowling: within this many points of bowling's fair share
+BOTH_ROLES_MAX_RATIO = 1.3      # batted-and-bowled: share at 9+ (or 4-) / share of all ratings
 POTM_TOP3_MIN = 70.0            # % of matches where the player of the match is top 3
 SPOT_MIN_RATING = 9.0
 SPOT_MIN_SHARE = 0.8
@@ -176,15 +177,53 @@ def scale(ratings: DataFrame) -> List[dict]:
     return out
 
 
+def _roles(ratings: DataFrame) -> DataFrame:
+    return (ratings.filter("involved")
+            .withColumn("_bowled", F.col("balls_bowled") >= 6)
+            .withColumn("_batted", (F.col("balls_faced") > 0) | (F.col("dismissed") > 0)))
+
+
 def role_balance(ratings: DataFrame) -> List[dict]:
-    """Neither batters nor bowlers should monopolise the 9+ ratings."""
-    rows = (ratings.filter(F.col("rating") >= 9).groupBy("competition").agg(
-        F.count("*").alias("n"),
-        (100 * F.avg((F.col("bowling") > F.col("batting")).cast("double"))).alias("pct"),
-    ).orderBy("competition").collect())
-    lo, hi = ROLE_RANGE
-    return [_row("pct_9_plus_mainly_bowling", r.competition, round(r.pct, 1), f"{lo:.0f}-{hi:.0f}%",
-                 lo <= r.pct <= hi, f"{r.n} ratings of 9+") for r in rows]
+    """Bowling's share of 9+ ratings should match its share of performances: with batting
+    ranked against batting and bowling against bowling, any innings or spell (an over or
+    more) should be about equally likely to reach 9. Fair share = spells / (spells + innings)."""
+    r = _roles(ratings)
+    rows = r.groupBy("competition").agg(
+        F.sum(F.col("_bowled").cast("int")).alias("spells"),
+        F.sum(F.col("_batted").cast("int")).alias("innings"),
+        F.sum((F.col("rating") >= 9).cast("int")).alias("n"),
+        (100 * F.avg(F.when(F.col("rating") >= 9, (F.col("bowling") > F.col("batting")).cast("double")))).alias("pct"),
+    ).orderBy("competition").collect()
+    out = []
+    for x in rows:
+        if not x.n:
+            continue
+        fair = 100.0 * x.spells / max(x.spells + x.innings, 1)
+        out.append(_row("pct_9_plus_mainly_bowling", x.competition, round(x.pct, 1),
+                        f"fair share {fair:.1f}% +- {ROLE_FAIR_MARGIN:.0f}",
+                        abs(x.pct - fair) <= ROLE_FAIR_MARGIN, f"{x.n} ratings of 9+"))
+    return out
+
+
+def both_roles(ratings: DataFrame) -> List[dict]:
+    """Players who batted and bowled shouldn't crowd the extremes: their share of 9+ ratings,
+    and of 4 or less, over their share of all ratings."""
+    r = _roles(ratings).withColumn("_both", (F.col("_bowled") & F.col("_batted")).cast("double"))
+    rows = r.groupBy("competition").agg(
+        F.avg("_both").alias("all"),
+        F.avg(F.when(F.col("rating") >= 9, F.col("_both"))).alias("top"),
+        F.avg(F.when(F.col("rating") <= 4, F.col("_both"))).alias("low"),
+    ).orderBy("competition").collect()
+    out = []
+    for x in rows:
+        if not x.all or x.top is None or x.low is None:
+            continue
+        ratio = max(x.top, x.low) / x.all
+        out.append(_row("both_roles_extremes_ratio", x.competition, round(ratio, 2),
+                        f"<= {BOTH_ROLES_MAX_RATIO}", ratio <= BOTH_ROLES_MAX_RATIO,
+                        f"batted and bowled: {100 * x.all:.1f}% of ratings, {100 * x.top:.1f}% of 9+, "
+                        f"{100 * x.low:.1f}% of 4 or less"))
+    return out
 
 
 def player_of_match(ratings: DataFrame, matches: DataFrame) -> List[dict]:
@@ -241,7 +280,7 @@ def run_validation(spark: SparkSession, t: Tables, version: str) -> Tuple[List[d
     results = (calibration(of_version(t.gold_ball_values))
                + rain_calibration(of_version(t.gold_ball_values), spark.table(t.silver_matches))
                + wicket_costs(of_version(t.gold_ball_values))
-               + scale(ratings) + era_flatness(ratings) + role_balance(ratings)
+               + scale(ratings) + era_flatness(ratings) + role_balance(ratings) + both_roles(ratings)
                + stage_balance(ratings) + cameo_vs_anchor(ratings)
                + player_of_match(ratings, spark.table(t.silver_matches)))
     spot_rows, spot_table = famous_performances(spark, ratings, spark.table(t.silver_players))
