@@ -7,7 +7,7 @@ import streamlit as st
 import data
 import ui
 
-st.title("About these ratings")
+st.title("About Slogonomics")
 st.markdown("""
 Every T20 player gets a **0–10 rating** for each match, like Sofascore's football ratings.
 

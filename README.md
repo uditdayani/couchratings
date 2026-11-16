@@ -4,7 +4,7 @@ Sofascore-style 0–10 match ratings and form ratings for T20 cricketers, built 
 
 **Status:** V2.1 – better ratings (rain-shortened innings, role-relative ratings, smoother expected-runs table). V1 is tagged `v1.0`.
 
-**Live dashboard:** https://couchratings.streamlit.app/
+**Live dashboard:** https://slogonomics.streamlit.app/
 
 ## Architecture
 
@@ -139,32 +139,35 @@ Wicket shares (starting values): bowled, lbw, hit wicket, caught and bowled 100%
 
 It also compares player-of-the-match awards the model disagrees with against those it agrees with, by role and by winning or losing side.
 
-### Results (model v3 = V2.1, 15 Nov 2026)
+### Results (model v3 = V2.1, 16 Nov 2026)
 
-All 23 checks pass.
+All 26 checks pass.
 
 | Check | V1 (`v2`) | V2.1 (`v3`) |
 | --- | --- | --- |
 | Calibration: IPL / T20I full members / T20I other | +0.22 / +1.35 / +1.57 | +0.13 / +0.31 / +0.61 |
 | Rain-affected first innings, avg runs added | +30.5 | −0.9 |
 | Dismissals costing over 25 runs | 8 of 61k (worst −38.5) | 1 of 61k (worst −25.4) |
-| Share of 9+ ratings, lowest to highest season (IPL) | rising to 4.8–5.3% | 2.3–4.3% |
-| Rating spread by stage: opener / top / middle / finisher | 1.56 / 1.35 / 0.85 / 0.62 | 1.48 / 1.49 / 1.45 / 1.59 |
-| Quick cameo vs 35–45 off 26–32, average rating | cameo lower | 7.72 vs 7.56 |
-| 9+ ratings driven mainly by bowling | 34–37% | 44–46% |
-| Player of the match in our top 3 / top-rated | 81.6% / 51.7% | 78.2% / 47.0% |
-| Famous performances rating 9+ | 9 of 10 (Yuvraj 8.8) | 10 of 10 (Yuvraj 10) |
+| Share of 9+ ratings, lowest to highest season (IPL) | rising to 4.8–5.3% | 2.2–4.1% |
+| Rating spread by stage: opener / top / middle / finisher | 1.56 / 1.35 / 0.85 / 0.62 | 1.46 / 1.47 / 1.44 / 1.57 |
+| Quick cameo vs 35–45 off 26–32, average rating | cameo lower | 7.66 vs 7.50 |
+| 9+ ratings mainly bowling, vs bowling's fair share | 34–37% (fair share about 48%) | 45–47% (fair share 48–49%) |
+| Batted and bowled: share of 9+ ÷ share of ratings | – | 1.16–1.20 |
+| Player of the match in our top 3 / top-rated | 81.6% / 51.7% | 79.8% / 48.3% |
+| Famous performances rating 9+ | 9 of 10 (Yuvraj 8.8) | 10 of 10 (Yuvraj 10, Maxwell 9.9) |
 
 - **Finishers now use the whole scale.** In V1 a finisher could barely go below 5 or above 7.5, so a late 2 off 5 rated 6.0 while an opener's failure rated about 3. V2.1 ranks each innings against innings that started at the same point.
 - **Cameos count.** Yuvraj Singh's 58 off 16 (six sixes) moves from 8.8 to 10, and short, fast innings now average slightly above steady 40s.
-- **Trade-off:** player-of-the-match agreement dips a little (still well above the 70% target): awards favour long innings by winning batters, which the old model also favoured.
+- **Bowlers get their fair share.** V1 under-rated bowling (34–37% of 9+ ratings against a fair share near 48%). An early V2.1 run over-corrected: adding an all-rounder's two parts at full weight let bowlers who also batted at the tail crowd both ends of the scale. Weighting the smaller part (`n / (n + 24)`) fixed it.
+- **All-rounders:** Maxwell's 145* with two expensive overs is 9.9: the best innings, docked a little for the bowling. Dividing the parts by √2, as first tried, gave 9.0.
+- **Trade-off:** player-of-the-match agreement dips slightly (still well above the 70% target): awards favour long innings by winning batters.
 - The median and the 9.3+ share are identical across competitions by design (ratings are percentiles within each competition), so they confirm the mapping rather than the model.
 
 ### Known limitations, from validation
 
 - **Ratings value runs above expectation, not *when* they swing a match.** A win-probability model would.
 - **Ratings ignore the result.** Where the official player of the match isn't in our top 3, the award winner is nearly always on the winning side; our top-rated player often isn't.
-- **Compared with awards, the model credits bowlers more** (44–46% of 9+ ratings are mainly bowling).
+- **Bowlers who didn't bat reach 9+ more often than batters who didn't bowl** (3.7% vs 2.9% in full-member T20Is, before the final weighting). Likely a selection effect: when bowlers rip through a side, their team chases easily and they never bat.
 - **Opposition strength isn't modelled.** Ranking within competition removes most of the effect of lopsided associate matches, but a big score against a weak attack still counts the same as against a strong one.
 - **The keeper is inferred** from career stumpings, so a stand-in keeper may not be charged the byes.
 

@@ -110,7 +110,7 @@ def test_match_page(demo):
 
 def test_about_page(demo):
     at = run("views/about.py")
-    assert at.title[0].value == "About these ratings"
+    assert at.title[0].value == "About Slogonomics"
     assert any(m.label == "Model version" and m.value == "v2" for m in at.metric)
 
 

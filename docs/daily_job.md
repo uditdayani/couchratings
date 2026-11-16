@@ -11,16 +11,16 @@ later steps don't run and you get an email.
 | 1 | `land_bronze` | `notebooks/02_bronze_land` | `catalog` = `workspace`, `download` = `recent`, `sources` = `recent_male` | – |
 | 2 | `build_silver` | `notebooks/03_silver_build` | `catalog` = `workspace` | `land_bronze` |
 | 3 | `silver_checks` | `notebooks/04_silver_checks` | `catalog` = `workspace` | `build_silver` |
-| 4 | `ratings` | `notebooks/06_gold_ratings` | `catalog` = `workspace`, `model_version` = `v2` | `silver_checks` |
-| 5 | `scale_and_form` | `notebooks/07_gold_scale_form` | `catalog` = `workspace`, `model_version` = `v2` | `ratings` |
-| 6 | `validation` | `notebooks/08_validation` | `catalog` = `workspace`, `model_version` = `v2` | `scale_and_form` |
+| 4 | `ratings` | `notebooks/06_gold_ratings` | `catalog` = `workspace`, `model_version` = `v3` | `silver_checks` |
+| 5 | `scale_and_form` | `notebooks/07_gold_scale_form` | `catalog` = `workspace`, `model_version` = `v3` | `ratings` |
+| 6 | `validation` | `notebooks/08_validation` | `catalog` = `workspace`, `model_version` = `v3` | `scale_and_form` |
 
 `05_gold_model` is **not** in the daily job: the run-expectancy table is only re-fitted when
-the model changes (as a new version, e.g. `v3`).
+the model changes (as a new version, e.g. `v4`).
 
 ## Creating it in Databricks
 
-1. In the left sidebar, open **Jobs & Pipelines** → **Create** → **Job**. Name it `cricket-ratings-daily`.
+1. In the left sidebar, open **Jobs & Pipelines** → **Create** → **Job**. Name it `slogonomics-daily`.
 2. Set up the first task:
    - **Task name:** `land_bronze`
    - **Type:** Notebook

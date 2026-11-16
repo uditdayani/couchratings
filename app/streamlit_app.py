@@ -1,14 +1,14 @@
-"""Cricket Player Ratings – Streamlit dashboard (entry point).
+"""Slogonomics – Streamlit dashboard (entry point).
 
 Needs [databricks] secrets (server_hostname, http_path, access_token; optional catalog)
-and optionally [app] model_version (default "v2"). See .streamlit/secrets.toml.example.
+and optionally [app] model_version (default "v3"). See .streamlit/secrets.toml.example.
 """
 import streamlit as st
 
 import data
 import ui
 
-st.set_page_config(page_title="Cricket Player Ratings", page_icon="🏏", layout="wide")
+st.set_page_config(page_title="Slogonomics", page_icon="🏏", layout="wide")
 
 pages = [
     st.Page("views/leaderboard.py", title="Form leaderboard", icon=":material/leaderboard:", default=True),
