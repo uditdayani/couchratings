@@ -9,7 +9,7 @@ full-member T20Is, ...):
 Each rank becomes a score on the same scale (0 = a typical performance of that kind); a
 player who batted and bowled gets the two added (V2.1.1), so an average spell leaves a
 batter's score unchanged, a good one adds and a poor one subtracts, plus fielding. The
-part with fewer balls counts n / (n + 12) of its score, so a bowler's 3-ball tail-end
+part with fewer balls counts n / (n + 24) of its score, so a bowler's 3-ball tail-end
 innings barely moves his rating while a genuine all-rounder's second part counts most. The
 combined score is ranked within the competition and that percentile is mapped onto fixed
 anchor points, interpolating between them:
@@ -58,7 +58,7 @@ def anchor_rating(p: Column) -> Column:
     return expr.otherwise(F.lit(ANCHORS[-1][1]))
 
 
-SECONDARY_BALLS_K = 12  # second part's weight = balls / (balls + K): 3 balls 0.2, 12 balls 0.5, 24 balls 0.67
+SECONDARY_BALLS_K = 24  # second part's weight = balls / (balls + K): 3 balls 0.11, 12 balls 0.33, 24 balls 0.5
 LOGISTIC_SD = 1.8138   # pi / sqrt(3): spread of a logit score, used to put fielding runs on it
 
 
