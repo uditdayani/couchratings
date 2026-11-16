@@ -8,9 +8,16 @@
 # MAGIC | Check | Target |
 # MAGIC | --- | --- |
 # MAGIC | Calibration: first-innings runs added per competition, since 2019 | within ±3 runs |
+# MAGIC | Calibration in rain-affected matches: first-innings runs added | within ±5 runs |
+# MAGIC | Dismissals costing over 25 runs | fewer than 1 in 10,000 |
 # MAGIC | Median rating per competition | 6.2–6.8 |
 # MAGIC | Share of ratings at 9.3+ per competition | 0.5–2% |
-# MAGIC | Share of 9+ ratings driven mainly by bowling | 25–55% |
+# MAGIC | Share of 9+ ratings: highest season minus lowest (seasons with 1,000+ ratings) | at most 2.5 points |
+# MAGIC | Share of 9+ ratings driven mainly by bowling | within 5 points of bowling's fair share |
+# MAGIC | Batted and bowled: share of 9+ (or 4 or less) ÷ share of all ratings | at most 1.3 |
+# MAGIC | Batting stages (opener → finisher): widest / narrowest rating spread | at most 1.3 |
+# MAGIC | Batting stages: highest / lowest share of 9+, and of 4 or less | at most 2 |
+# MAGIC | Quick cameos (15+ off ≤8 balls) vs 35–45 off 26–32: average rating | cameo at least as high |
 # MAGIC | Player of the match among the top 3 rated | at least 70% of matches |
 # MAGIC | Famous performances rating 9+ | at least 80% of those found |
 
@@ -23,7 +30,7 @@ from cricket_ratings import validation
 from cricket_ratings.config import Tables
 
 dbutils.widgets.text("catalog", "workspace")
-dbutils.widgets.text("model_version", "v2")
+dbutils.widgets.text("model_version", "v3")
 t = Tables(catalog=dbutils.widgets.get("catalog"))
 VERSION = dbutils.widgets.get("model_version")
 

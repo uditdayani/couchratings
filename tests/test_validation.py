@@ -24,6 +24,74 @@ def test_calibration(spark):
     assert ("calibration", "Tiny") not in r
 
 
+def test_rain_calibration(spark):
+    bv = spark.createDataFrame([("r1", 1, 30.0), ("r2", 1, -26.0), ("r3", 1, 40.0), ("n1", 1, 50.0)],
+                               "match_id string, innings_no int, runs_added double")
+    matches = spark.createDataFrame([("r1", "D/L"), ("r2", "D/L"), ("r3", "D/L"), ("n1", None)],
+                                    "match_id string, method string")
+    [r] = validation.rain_calibration(bv, matches)
+    assert r["value"] == pytest.approx(14.67, abs=0.01) and not r["passed"]   # (30 - 26 + 40) / 3
+    [ok] = validation.rain_calibration(bv.filter("match_id != 'r3'"), matches)
+    assert ok["value"] == 2.0 and ok["passed"]                                 # normal match ignored
+
+
+def test_wicket_costs(spark):
+    rows = [(1, -12.0)] * 20000 + [(0, 0.0)] * 5
+    ok = spark.createDataFrame(rows + [(1, -30.0)], "dismissals int, wicket_cost double")
+    [r] = validation.wicket_costs(ok)
+    assert r["passed"] and r["value"] == pytest.approx(0.5, abs=0.01)       # 1 in 20,001
+    bad = spark.createDataFrame(rows + [(1, -38.5)] * 8, "dismissals int, wicket_cost double")
+    [r] = validation.wicket_costs(bad)
+    assert not r["passed"] and "worst -38.5" in r["detail"]
+
+
+def test_era_flatness(spark):
+    import datetime as dt
+    def season(comp, year, pct9, n=1000):
+        k = round(n * pct9 / 100)
+        return [(comp, dt.date(year, 5, 1), True, 9.5)] * k + [(comp, dt.date(year, 5, 1), True, 6.5)] * (n - k)
+    rows = []
+    for y, p in ((2015, 3.0), (2020, 3.5), (2025, 4.0)):
+        rows += season("Flat", y, p)
+    for y, p in ((2015, 2.0), (2020, 3.0), (2025, 5.0)):
+        rows += season("Drifting", y, p)
+    rows += season("Tiny", 2025, 9.0, n=200)                                 # too small: ignored
+    r = by_scope(validation.era_flatness(spark.createDataFrame(
+        rows, "competition string, match_date date, involved boolean, rating double")))
+    assert r[("era_9_plus_range", "Flat")]["passed"] and r[("era_9_plus_range", "Flat")]["value"] == 1.0
+    assert not r[("era_9_plus_range", "Drifting")]["passed"]
+    assert ("era_9_plus_range", "Tiny") not in r
+
+
+RATING_COLS = ("batting_stage string, rating double, involved boolean, balls_bowled int, "
+               "balls_faced int, dismissed int, runs int")
+
+
+def test_stage_balance(spark):
+    import random
+    rnd = random.Random(1)
+    def stage(name, centre, width, n=600):
+        return [(name, min(10.0, max(3.0, centre + rnd.uniform(-width, width))), True, 0, 10, 1, 20)
+                for _ in range(n)]
+    even = stage("opener", 6.5, 3.5) + stage("finisher", 6.5, 3.5)
+    r = by_scope(validation.stage_balance(spark.createDataFrame(even, RATING_COLS)))
+    assert r[("stage_spread_ratio", "All")]["passed"]
+    squeezed = stage("opener", 6.5, 3.5) + stage("finisher", 6.6, 1.2)      # V1-like
+    r = by_scope(validation.stage_balance(spark.createDataFrame(squeezed, RATING_COLS)))
+    assert not r[("stage_spread_ratio", "All")]["passed"]
+    assert not r[("stage_9_plus_ratio", "All")]["passed"]                   # finishers never reach 9
+
+
+def test_cameo_vs_anchor(spark):
+    cameos = [(None, 7.8, True, 0, 6, 1, 20)] * 25
+    anchors = [(None, 7.2, True, 0, 29, 1, 40)] * 25
+    [r] = validation.cameo_vs_anchor(spark.createDataFrame(cameos + anchors, RATING_COLS))
+    assert r["passed"] and r["value"] == 0.6
+    [r] = validation.cameo_vs_anchor(spark.createDataFrame(
+        [(None, 6.0, True, 0, 6, 1, 20)] * 25 + anchors, RATING_COLS))
+    assert not r["passed"]
+
+
 def test_scale_passes_on_real_ratings_and_fails_on_bunched_ones(spark):
     good = gold_scale.rate(spark.createDataFrame(
         [perf(f"m{i}", f"p{i}", "Cup", i) for i in range(1000)], IMPACT_COLS))
@@ -33,14 +101,41 @@ def test_scale_passes_on_real_ratings_and_fails_on_bunched_ones(spark):
     assert not r[("median_rating", "Bunched")]["passed"] and not r[("pct_9_3_plus", "Bunched")]["passed"]
 
 
-def test_role_balance(spark):
-    rows = [("Even", 9.5, 30.0, 0.0)] * 6 + [("Even", 9.5, 0.0, 30.0)] * 4 \
-         + [("Batting only", 9.5, 30.0, 0.0)] * 10
-    r = by_scope(validation.role_balance(spark.createDataFrame(
-        rows, "competition string, rating double, batting double, bowling double")))
-    assert r[("pct_9_plus_mainly_bowling", "Even")]["value"] == 40.0
-    assert r[("pct_9_plus_mainly_bowling", "Even")]["passed"]
-    assert not r[("pct_9_plus_mainly_bowling", "Batting only")]["passed"]
+ROLE_RATING_COLS = ("competition string, rating double, batting double, bowling double, involved boolean, "
+                    "balls_bowled int, balls_faced int, dismissed int")
+
+
+def test_role_balance_against_fair_share(spark):
+    # 40 spells and 60 innings: bowling's fair share of 9+ is 40%.
+    base = [("Fair", 6.5, 0.0, 5.0, True, 24, 0, 0)] * 36 + [("Fair", 6.5, 5.0, 0.0, True, 0, 20, 1)] * 54
+    fair = base + [("Fair", 9.5, 0.0, 30.0, True, 24, 0, 0)] * 4 + [("Fair", 9.5, 30.0, 0.0, True, 0, 20, 1)] * 6
+    heavy = [("Heavy",) + x[1:] for x in base] + [("Heavy", 9.5, 0.0, 30.0, True, 24, 0, 0)] * 7 \
+        + [("Heavy", 9.5, 30.0, 0.0, True, 0, 20, 1)] * 3
+    r = by_scope(validation.role_balance(spark.createDataFrame(fair + heavy, ROLE_RATING_COLS)))
+    assert r[("pct_9_plus_mainly_bowling", "Fair")]["value"] == 40.0
+    assert r[("pct_9_plus_mainly_bowling", "Fair")]["passed"]
+    assert "fair share 40.0%" in r[("pct_9_plus_mainly_bowling", "Fair")]["target"]
+    assert not r[("pct_9_plus_mainly_bowling", "Heavy")]["passed"]     # 70% vs a fair 40%
+
+    # A bowler who also faced 2 balls counts as a bowling performance, not as one of each.
+    tail = [("Tail", 6.5, 1.0, 5.0, True, 24, 2, 1)] * 40 + [("Tail", 6.5, 5.0, 0.0, True, 0, 20, 1)] * 60
+    [t] = validation.role_balance(spark.createDataFrame(
+        tail + [("Tail", 9.5, 1.0, 30.0, True, 24, 2, 1)] * 4, ROLE_RATING_COLS))
+    assert "fair share 42.3%" in t["target"]                              # 44 / 104, not 44 / 148
+
+
+def test_both_roles(spark):
+    bat = ("Even", 6.5, 5.0, 0.0, True, 0, 20, 1)
+    both = ("Even", 6.5, 5.0, 2.0, True, 12, 10, 1)
+    def comp(name, top_both, low_both):
+        rows = [(name,) + bat[1:]] * 60 + [(name,) + both[1:]] * 20               # 25% did both
+        rows += [(name, 9.5) + both[2:]] * top_both + [(name, 9.5) + bat[2:]] * (10 - top_both)
+        rows += [(name, 3.5) + both[2:]] * low_both + [(name, 3.5) + bat[2:]] * (10 - low_both)
+        return rows
+    r = by_scope(validation.both_roles(spark.createDataFrame(
+        comp("Even", 3, 3) + comp("Crowded", 6, 5), ROLE_RATING_COLS)))
+    assert r[("both_roles_extremes_ratio", "Even")]["passed"]                  # 30% / 26% ~ 1.15
+    assert not r[("both_roles_extremes_ratio", "Crowded")]["passed"]           # 60% / 30% = 2
 
 
 def test_player_of_match(spark):
@@ -71,7 +166,7 @@ def test_famous_performances_found_missed_and_missing(spark):
 
 def test_run_validation_end_to_end(spark, built):  # noqa: F811
     t, _, _ = built
-    gold_model.fit_model(spark, t, "v1", min_samples=1, max_window=0)
+    gold_model.fit_model(spark, t, "v1", min_samples=1)
     gold_ratings.run_ratings(spark, t, "v1")
     gold_scale.run_scale(spark, t, "v1")
     results, table = validation.run_validation(spark, t, "v1")

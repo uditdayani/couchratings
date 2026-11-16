@@ -1,10 +1,10 @@
-# Cricket Player Ratings
+# Slogonomics
 
 Sofascore-style 0–10 match ratings and form ratings for T20 cricketers, built as a medallion data pipeline (Bronze → Silver → Gold) on Databricks Free Edition with a Streamlit dashboard.
 
-**Status:** V1 complete – daily pipeline, validated ratings, live dashboard.
+**Status:** V2.1 – better ratings (rain-shortened innings, role-relative ratings, smoother expected-runs table). V1 is tagged `v1.0`.
 
-**Live dashboard:** couchratings.streamlit.app
+**Live dashboard:** https://couchratings.streamlit.app/
 
 ## Architecture
 
@@ -89,8 +89,8 @@ Design choices:
 
 - **Fitted on first innings only**, from full-length completed matches. A chase stops when the target is reached, which would cut "runs to the end" short. V1 uses the same table for both innings.
 - **Each innings counts once per state**, the first time it reaches it, so a wide doesn't double-count a state.
-- **Sparse cells are pooled** with neighbouring balls-left cells by fitting a weighted straight line, so neighbours on one side only (a gap, or the 120-ball edge) don't bias the estimate. Cells with no nearby data are interpolated, then the table is made monotone: more balls never means fewer runs, and more wickets never means more.
-- **Fitted on 2019 onwards** (`v2`) for modern batting patterns.
+- **Smoothed with a curve** (V2.1): for each wickets-down level, a Duckworth–Lewis-style curve `Z0 · (1 − e^(−k·b))` is fitted to the cell averages, and each cell blends its own average with the curve, weighted by how many innings reached it (`(n·mean + 50·curve) / (n + 50)`). Rare states (5 down with 15 overs left) follow the curve instead of noise. The table is then made monotone: more balls never means fewer runs, and more wickets never means more. V1 pooled neighbouring cells with straight lines, which let a few dismissals cost almost 40 runs.
+- **Fitted on 2019 onwards** for modern batting patterns.
 - **Scoring environment:** the IPL now averages 190+ in the first innings while T20Is (mostly associate nations since 2019) average about 150. One table alone would overrate every IPL batter, so expected runs = `RE(b, w) × environment factor × venue factor`. The environment factor is a competition-year's average first-innings total ÷ RE(120 balls, 0 down), so a side's expected total at the start of an innings is exactly its competition-year's average. It covers every season, so older matches are rated against their own era, and small seasons are pulled towards their own competition's level rather than the global average.
 - **Venue factor** is measured against what each match's competition and year predict, so a ground isn't "high-scoring" just for hosting the IPL. Both factors are shrunk towards 1.0 when they rest on few matches: `1 + m / (m + k) × (raw − 1)`, with k = 5 (environment) and 10 (venue).
 
@@ -105,11 +105,15 @@ Every ball is valued by how much it changed the batting side's expected runs: `r
 | Bowler | −(runs off the bat + wides + no-balls) − ball cost + bowler share of the wicket |
 | Fielders | fielder share of the wicket, split between the fielders named |
 
-Wicket shares (starting values): bowled, lbw, hit wicket, caught and bowled 100% bowler; caught 80% bowler / 20% catcher; stumped 70% / 30% keeper; run out 100% to the fielders. Byes and leg-byes aren't charged to the bowler. Shortened matches use the reduced overs. Super overs and no-results aren't rated. T20Is are split into full-member matches and those involving associates, which score very differently.
+Wicket shares (starting values): bowled, lbw, hit wicket, caught and bowled 100% bowler; caught 80% bowler / 20% catcher; stumped 70% / 30% keeper; run out 100% to the fielders. Byes and leg-byes aren't charged to the bowler. Shortened matches use the reduced overs, **per innings** (V2.1): a first innings cut short by rain is valued against the length it actually had, not the full 20 overs, which in V1 inflated rain-hit first innings by 30 runs. Byes are charged to the wicketkeeper (V2.1): the keeper is inferred as the fielding player with the most career stumpings. Super overs and no-results aren't rated. T20Is are split into full-member matches and those involving associates, which score very differently.
 
 ## Ratings and form
 
-- **0–10 rating:** each performance's impact is ranked against every rated performance in the **same competition** (IPL, T20I full members, T20I other), and the percentile is mapped onto anchors, interpolating between them: 1st → 3.0, 25th → 5.8, 50th → 6.5, 90th → 8.0, 99th → 9.3, best ever → 10.0. Ranking within the competition stops lopsided associate matches from taking most of the top ratings.
+- **Role-relative ranking** (V2.1): impact is first divided by the match's scoring level (environment × venue), then each part is ranked against its own kind within the **same competition** (IPL, T20I full members, T20I other):
+  - **batting** against innings that began at the same **stage**: opener, top order (60+ balls left), middle order (30–60), finisher (under 30). A finisher's 20 off 6 is compared with other finishers, not with openers who had 15 overs to build;
+  - **bowling** (an over or more) against other bowling performances;
+  - each rank becomes a standard score; 0 is a typical performance of that kind, so an all-rounder's two scores are **added** (V2.1.1): an average spell leaves the batting score unchanged, a poor one subtracts (Maxwell's 145* with two expensive overs: 9.0 when V2.1 divided the sum by √2, which penalised even an average spell), and the part with fewer balls counts `n / (n + 24)` of its score, so a bowler's 3-ball tail-end innings barely moves his rating (without this, players who did both crowded the 9+ and 4-or-less ratings); fielding plus any part-over of bowling is added in the same units.
+- **0–10 rating:** the combined score's percentile within the competition is mapped onto anchors, interpolating between them: 1st → 3.0, 25th → 5.8, 50th → 6.5, 90th → 8.0, 99th → 9.3, best ever → 10.0. Ranking within the competition stops lopsided associate matches from taking most of the top ratings.
 - **Involvement:** players are rated only if they faced 5 balls, bowled an over, were dismissed, or took part in a dismissal; others show "–".
 - **Form:** weighted average of the last 10 ratings, each match counting half as much every 5 matches back; needs 3 rated matches. Leaderboards rank active players (played in the last 12 months) with 5+ rated matches, overall and per competition.
 
@@ -120,34 +124,49 @@ Wicket shares (starting values): bowled, lbw, hit wicket, caught and bowled 100%
 | Check | Target |
 | --- | --- |
 | First-innings runs added per competition since 2019 (calibration) | within ±3 runs |
+| Rain-affected first innings: runs added | within ±5 runs |
+| Dismissals costing over 25 runs | fewer than 1 in 10,000 |
 | Median rating per competition | 6.2–6.8 |
 | Ratings at 9.3+ per competition | 0.5–2% |
-| 9+ ratings driven mainly by bowling | 25–55% |
+| Share of 9+ ratings: highest season minus lowest (seasons with 1,000+ ratings) | at most 2.5 points |
+| 9+ ratings driven mainly by bowling | within 5 points of bowling's fair share (performances led by bowling ÷ all; a performance with both counts once, by the part with more balls) |
+| Players who batted and bowled: share of 9+ (or 4 or less) ÷ share of all ratings | at most 1.3 |
+| Batting stages: widest / narrowest rating spread | at most 1.3 |
+| Batting stages: highest / lowest share of 9+, and of 4 or less | at most 2 |
+| Quick cameos (15+ off ≤8) vs 35–45 off 26–32: average rating | cameo at least as high |
 | Official player of the match in the top 3 rated | at least 70% of matches |
 | Famous performances (chosen independently of the model) rating 9+ | at least 80% |
 
 It also compares player-of-the-match awards the model disagrees with against those it agrees with, by role and by winning or losing side.
 
-### Results (model v2, 13 Nov 2026)
+### Results (model v3 = V2.1, 15 Nov 2026)
 
-All 14 checks pass.
+All 23 checks pass.
 
-| Check | IPL | T20I full members | T20I other |
-| --- | --- | --- | --- |
-| Calibration (avg first-innings runs added) | +0.22 | +1.35 | +1.57 |
-| Median rating | 6.5 | 6.5 | 6.5 |
-| 9+ ratings driven mainly by bowling | 36.5% | 36.3% | 34.3% |
+| Check | V1 (`v2`) | V2.1 (`v3`) |
+| --- | --- | --- |
+| Calibration: IPL / T20I full members / T20I other | +0.22 / +1.35 / +1.57 | +0.13 / +0.31 / +0.61 |
+| Rain-affected first innings, avg runs added | +30.5 | −0.9 |
+| Dismissals costing over 25 runs | 8 of 61k (worst −38.5) | 1 of 61k (worst −25.4) |
+| Share of 9+ ratings, lowest to highest season (IPL) | rising to 4.8–5.3% | 2.3–4.3% |
+| Rating spread by stage: opener / top / middle / finisher | 1.56 / 1.35 / 0.85 / 0.62 | 1.48 / 1.49 / 1.45 / 1.59 |
+| Quick cameo vs 35–45 off 26–32, average rating | cameo lower | 7.72 vs 7.56 |
+| 9+ ratings driven mainly by bowling | 34–37% | 44–46% |
+| Player of the match in our top 3 / top-rated | 81.6% / 51.7% | 78.2% / 47.0% |
+| Famous performances rating 9+ | 9 of 10 (Yuvraj 8.8) | 10 of 10 (Yuvraj 10) |
 
-- **Player of the match:** in the top 3 rated in **81.6%** of 4,564 matches, and top-rated in 51.7%.
-- **Famous performances:** **9 of 10** rate 9+, and all 7 chosen independently of the model rate 9.6–10 (Rohit Sharma's 118, Maxwell's 145*, Finch's 172, Mendis's 6/8, Chahar's 6/7, Alzarri Joseph's 6/12). The miss is Yuvraj Singh's 58 off 16 (six sixes), rated 8.8.
+- **Finishers now use the whole scale.** In V1 a finisher could barely go below 5 or above 7.5, so a late 2 off 5 rated 6.0 while an opener's failure rated about 3. V2.1 ranks each innings against innings that started at the same point.
+- **Cameos count.** Yuvraj Singh's 58 off 16 (six sixes) moves from 8.8 to 10, and short, fast innings now average slightly above steady 40s.
+- **Trade-off:** player-of-the-match agreement dips a little (still well above the 70% target): awards favour long innings by winning batters, which the old model also favoured.
 - The median and the 9.3+ share are identical across competitions by design (ratings are percentiles within each competition), so they confirm the mapping rather than the model.
 
 ### Known limitations, from validation
 
-- **Short, match-turning cameos are underrated.** Ratings measure runs above expectation, so a brilliant 58 off 16 is worth about 30 runs and rates 8.8, below big innings. Valuing *when* runs swing a match needs a win-probability model.
-- **Ratings ignore the result.** Where the official player of the match isn't in our top 3 (842 matches), the award winner was on the winning side 96% of the time, but our top-rated player only 47%.
-- **Compared with awards, the model credits bowlers more.** In those disagreements, 52% of our top-rated players were mainly bowlers, while 61% of award winners were mainly batters.
+- **Ratings value runs above expectation, not *when* they swing a match.** A win-probability model would.
+- **Ratings ignore the result.** Where the official player of the match isn't in our top 3, the award winner is nearly always on the winning side; our top-rated player often isn't.
+- **Compared with awards, the model credits bowlers more** (44–46% of 9+ ratings are mainly bowling).
 - **Opposition strength isn't modelled.** Ranking within competition removes most of the effect of lopsided associate matches, but a big score against a weak attack still counts the same as against a strong one.
+- **The keeper is inferred** from career stumpings, so a stand-in keeper may not be charged the byes.
 
 ## Dashboard
 
@@ -202,7 +221,7 @@ pip install -r requirements-dev.txt   # needs Java 17+
 pytest -q tests
 ```
 
-The tests cover the dashboard (every page rendering on demo data, filters, links between pages, a clear error when data is missing, scorecard formatting), every validation check passing on good data and failing on bad, the 0–10 mapping and form (anchors, interpolation, within-competition ranking, involvement, recency weights, leaderboard eligibility), the rating engine against hand-worked credits for a full innings (wides, no-balls, leg-byes, a catch, a substitute's run out, scaling), the run-expectancy smoothing against a table with a known answer (pooling, gaps, edges, monotonicity), the first-time-in-state observations, versioned model writes, legal-ball counting with wides and no-balls, wickets and substitute fielders, no-result and super-over matches, quarantining bad files, idempotent re-runs, revised files, and the quality checks catching broken rows. Delta-only writes (in `storage.py`) are swapped for plain-Spark equivalents in tests.
+The tests cover the dashboard (every page rendering on demo data, filters, links between pages, a clear error when data is missing, scorecard formatting), every validation check passing on good data and failing on bad, the 0–10 mapping and form (anchors, interpolation, within-competition ranking, involvement, recency weights, leaderboard eligibility), role-relative ranking (finishers and openers sharing the scale, a quick cameo beating a middling long innings, bowling ranked against bowling, all-rounders combining both), the rating engine against hand-worked credits for a full innings (wides, no-balls, leg-byes, a catch, a substitute's run out, scaling), rain-shortened innings, batting stages and keeper byes, the curve-fitted run-expectancy table (recovering a known curve, sparse cells, monotonicity, the V1 costly-dismissal regression), the first-time-in-state observations, versioned model writes, legal-ball counting with wides and no-balls, wickets and substitute fielders, no-result and super-over matches, quarantining bad files, idempotent re-runs, revised files, and the quality checks catching broken rows. Delta-only writes (in `storage.py`) are swapped for plain-Spark equivalents in tests.
 
 ## Data and attribution
 
