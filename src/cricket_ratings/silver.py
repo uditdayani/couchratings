@@ -6,6 +6,8 @@ Tables (grain):
   deliveries     one row per ball, including wides and no-balls
   match_players  one row per player per match
   players        one row per player (Cricsheet Register ID)
+  venues         one row per ground (Cricsheet venue register)
+  venue_names    one row per spelling of a ground used in match data -> its venue id
 
 Each run processes only Bronze files the Silver stage has not seen (new files
 or new versions). For those matches it deletes any old rows and inserts fresh
@@ -246,3 +248,36 @@ def build_silver(spark: SparkSession, t: Tables, run_id: str,
     )
     storage.append(log, t.ingest_log)
     return {"parsed": n_ok, "quarantined": len(batch_rows) - n_ok}
+
+
+# ------------------------------------------------------------------- venues
+
+def build_venues(spark: SparkSession, t: Tables, folder: str) -> dict:
+    """Load Cricsheet's venue register (venues.csv, venue_names.csv in `folder`) into
+    silver.venues and silver.venue_names, replacing both. A spelling that points to more
+    than one ground is left out, so a match is never joined to two venues; such matches,
+    and grounds not yet in the register, show the venue as written."""
+    def read(name):
+        return (spark.read.option("header", True).option("quote", '"').option("escape", '"')
+                .csv(f"{folder}/{name}"))
+
+    venues = read("venues.csv").select(
+        F.col("identifier").alias("venue_id"), "name", "unique_name",
+        F.col("key_cricinfo").cast("string").alias("key_cricinfo"))
+    spellings = (read("venue_names.csv").select(F.col("identifier").alias("venue_id"), "name")
+                 .unionByName(venues.select("venue_id", "name"))
+                 .unionByName(venues.select("venue_id", F.col("unique_name").alias("name")))
+                 .filter(F.col("name").isNotNull()).distinct())
+    unique = (spellings.groupBy("name").agg(F.countDistinct("venue_id").alias("n"),
+                                            F.first("venue_id").alias("venue_id"))
+              .filter("n = 1").select("name", "venue_id"))
+    storage.overwrite(venues, t.silver_venues)
+    storage.overwrite(unique, t.silver_venue_names)
+
+    used = spark.table(t.silver_matches).select(F.col("venue").alias("name")).distinct()
+    unmatched = used.join(spark.table(t.silver_venue_names), "name", "left_anti")
+    return {"venues": spark.table(t.silver_venues).count(),
+            "spellings": spark.table(t.silver_venue_names).count(),
+            "ambiguous_spellings_dropped": spellings.select("name").distinct().count() - unique.count(),
+            "match_venues": used.count(),
+            "match_venues_not_in_register": unmatched.count()}

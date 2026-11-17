@@ -17,6 +17,17 @@ from .config import Tables
 RECENT_URL = "https://cricsheet.org/downloads/recently_added_7_male_json.zip"
 RECENT_ZIP = "recent_male_json.zip"     # lands as source "recent_male"
 
+# Cricsheet's venue register: one id per ground, and every spelling used in the match data.
+VENUE_REGISTER = {
+    "venues.csv": "https://cricsheet.org/register/venues.csv",
+    "venue_names.csv": "https://cricsheet.org/register/venue_names.csv",
+}
+
+
+def download_venue_register(folder: str) -> dict:
+    """Fetch the venue register CSVs into `folder` (replacing older copies). Returns sizes."""
+    return {name: download(url, os.path.join(folder, name)) for name, url in VENUE_REGISTER.items()}
+
 
 def download(url: str, target: str, timeout: int = 120) -> int:
     """Download a file (e.g. a Cricsheet zip) to `target`. Returns its size in bytes."""

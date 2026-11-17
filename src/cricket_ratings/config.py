@@ -42,6 +42,18 @@ class Tables:
         return self._t("silver", "players")
 
     @property
+    def silver_venues(self) -> str:
+        return self._t("silver", "venues")
+
+    @property
+    def silver_venue_names(self) -> str:
+        return self._t("silver", "venue_names")
+
+    @property
+    def gold_matchups(self) -> str:
+        return self._t("gold", "matchups")
+
+    @property
     def gold_model_versions(self) -> str:
         return self._t("gold", "model_versions")
 

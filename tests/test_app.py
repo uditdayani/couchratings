@@ -40,6 +40,22 @@ def test_scorecard_lines():
     assert ui.score_line(143, 10, 112) == "143 (18.4 ov)"        # all out
 
 
+def test_player_teams_prefers_nationality_over_exhibition_sides():
+    df = pd.DataFrame({
+        "player_id": ["mm"] * 3 + ["ip"] + ["sw"] * 2,
+        "match_date": pd.to_datetime(["2016-01-01", "2017-05-01", "2018-05-31", "2024-04-01",
+                                      "2015-01-01", "2020-01-01"]),
+        "competition": ["T20I full members", "Indian Premier League", "T20I other",
+                        "Indian Premier League", "T20I other", "T20I other"],
+        "team": ["South Africa", "Delhi Daredevils", "ICC World XI", "Mumbai Indians",
+                 "Ireland", "England"],
+    })
+    t = ui.player_teams(df)
+    assert t.loc["mm", "label"] == "South Africa" and t.loc["mm", "club"] == "Delhi Daredevils"
+    assert t.loc["ip", "label"] == "Mumbai Indians"                 # never played a T20I
+    assert t.loc["sw", "label"] == "England"                         # most recent country
+
+
 def test_result_lines():
     base = {"method": None, "super_over_winner": None}
     assert ui.result_line({**base, "result": "win", "winner": "India", "win_by_runs": 11,
@@ -94,7 +110,7 @@ def test_player_page(demo):
     at = run("views/player.py", player=pid)
     assert at.title[0].value == name
     assert any(m.label == "Current form" for m in at.metric)
-    log = at.dataframe[0].value
+    log = at.dataframe[-1].value
     assert {"Date", "Rating", "Batting", "Bowling"} <= set(log.columns)
 
 
@@ -106,6 +122,64 @@ def test_match_page(demo):
     assert len(at.dataframe) == 2                                 # one card per team
     assert len(at.dataframe[0].value) == 11
     assert at.dataframe[0].value["Bowling"].str.contains("par").any()
+
+
+def test_player_page_sections(demo):
+    pid = demo["ratings"]["player_id"].value_counts().index[0]
+    at = run("views/player.py", player=pid)
+    labels = {m.label for m in at.metric}
+    assert {"Median rating", "Spread", "Good days", "Off days"} <= labels
+    subheads = {s.value for s in at.subheader}
+    assert {"Teams played for", "Best grounds", "Head-to-head", "Match history"} <= subheads
+    history = at.dataframe[-1].value
+    assert "Team" in history.columns and len(history) <= 25
+
+
+def test_player_history_filters(demo):
+    pid = demo["ratings"]["player_id"].value_counts().index[0]
+    at = run("views/player.py", player=pid)
+    comp = demo["ratings"].query("player_id == @pid")["competition"].iloc[0]
+    at.multiselect(key="hist_comp").set_value([comp]).run()
+    assert not at.exception
+    assert set(at.dataframe[-1].value["Competition"]) == {comp}
+
+
+def test_records_page(demo):
+    at = run("views/records.py")
+    assert at.title[0].value == "Records"
+    best = at.dataframe[0].value
+    assert len(best) == 50 and best["Rating"].iloc[0] == demo["ratings"]["rating"].max()
+
+
+def test_head_to_head_page(demo):
+    pair = demo["matchups"].groupby(["batter_id", "bowler_id"])["balls"].sum().idxmax()
+    at = run("views/head_to_head.py", batter=pair[0], bowler=pair[1])
+    assert at.title[0].value == "Head-to-head"
+    table = at.dataframe[0].value
+    assert "All" in set(table["Competition"])
+    total = demo["matchups"].query("batter_id == @pair[0] and bowler_id == @pair[1]")["balls"].sum()
+    assert table.set_index("Competition").loc["All", "Balls"] == total
+
+
+def test_head_to_head_without_data_explains(demo, tmp_path):
+    import shutil
+    for f in os.listdir(os.environ["CRICKET_RATINGS_DATA_DIR"]):
+        if f != "matchups.parquet":
+            shutil.copy(os.path.join(os.environ["CRICKET_RATINGS_DATA_DIR"], f), tmp_path / f)
+    old = os.environ["CRICKET_RATINGS_DATA_DIR"]
+    os.environ["CRICKET_RATINGS_DATA_DIR"] = str(tmp_path)
+    try:
+        at = run("views/head_to_head.py")
+        assert "isn't available yet" in at.info[0].value
+    finally:
+        os.environ["CRICKET_RATINGS_DATA_DIR"] = old
+
+
+def test_venues_page(demo):
+    at = run("views/venues.py")
+    assert at.title[0].value == "Venues"
+    assert any(m.label == "Average first innings" for m in at.metric)
+    assert at.subheader[0].value.endswith("Stadium, " + at.subheader[0].value.split()[0])   # register name
 
 
 def test_about_page(demo):

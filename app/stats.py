@@ -1,0 +1,249 @@
+"""Calculations behind the dashboard pages, in plain pandas so they can be tested on their own.
+
+`ratings` is the ratings dataset (one row per player per match, `involved` marks a rating),
+`matches` the matches dataset and `matchups` the batter-vs-bowler dataset (see data.py).
+"""
+from typing import Iterable, Optional
+
+import numpy as np
+import pandas as pd
+
+GOOD_DAY = 7.0       # a rating this high or higher counts as a good day
+OFF_DAY = 5.5        # this low or lower counts as an off day
+
+
+def rated(ratings: pd.DataFrame) -> pd.DataFrame:
+    return ratings[ratings["involved"] & ratings["rating"].notna()]
+
+
+# ------------------------------------------------------------------ player: teams
+
+def teams_played_for(ratings: pd.DataFrame, player_id: str) -> pd.DataFrame:
+    """Every team a player has played for, most recent first: competition, matches, years."""
+    mine = ratings[ratings["player_id"] == player_id]
+    if mine.empty:
+        return pd.DataFrame(columns=["Team", "Competition", "Matches", "Years"])
+    g = (mine.groupby(["team", "competition"])
+         .agg(matches=("match_id", "nunique"), first=("match_date", "min"), last=("match_date", "max"))
+         .reset_index().sort_values("last", ascending=False))
+    years = [f"{a.year}" if a.year == b.year else f"{a.year}–{b.year}" for a, b in zip(g["first"], g["last"])]
+    return pd.DataFrame({"Team": g["team"].values, "Competition": g["competition"].values,
+                         "Matches": g["matches"].values, "Years": years})
+
+
+# ------------------------------------------------------------------ player: consistency
+
+def consistency(ratings: pd.DataFrame) -> pd.DataFrame:
+    """Per player: rated matches, average, median, spread (standard deviation), and the share
+    of good days (7.0+) and off days (5.5 or less)."""
+    r = rated(ratings)
+    g = r.groupby("player_id")["rating"]
+    out = pd.DataFrame({
+        "matches": g.size(),
+        "average": g.mean(),
+        "median": g.median(),
+        "spread": g.std(ddof=0),
+        "pct_good": g.apply(lambda x: 100 * (x >= GOOD_DAY).mean()),
+        "pct_off": g.apply(lambda x: 100 * (x <= OFF_DAY).mean()),
+    })
+    names = r.drop_duplicates("player_id").set_index("player_id")["name"]
+    return out.join(names).round({"average": 2, "median": 2, "spread": 2, "pct_good": 1, "pct_off": 1})
+
+
+# ------------------------------------------------------------------ player: match history
+
+def filter_history(log: pd.DataFrame, competitions: Optional[Iterable[str]] = None,
+                   years: Optional[Iterable[int]] = None, role: str = "All",
+                   rated_only: bool = False) -> pd.DataFrame:
+    """A player's matches, newest first, filtered. `role`: All, Batted, Bowled."""
+    out = log
+    if competitions:
+        out = out[out["competition"].isin(list(competitions))]
+    if years:
+        out = out[out["match_date"].dt.year.isin(list(years))]
+    if role == "Batted":
+        out = out[(out["balls_faced"] > 0) | (out["dismissed"] > 0)]
+    elif role == "Bowled":
+        out = out[out["balls_bowled"] > 0]
+    if rated_only:
+        out = out[out["involved"] & out["rating"].notna()]
+    return out.sort_values("match_date", ascending=False)
+
+
+def page_of(df: pd.DataFrame, page: int, size: int) -> pd.DataFrame:
+    """Rows for a 1-based page number (clamped to the pages that exist)."""
+    pages = max(1, -(-len(df) // size))
+    page = min(max(1, int(page)), pages)
+    return df.iloc[(page - 1) * size: page * size]
+
+
+def n_pages(n_rows: int, size: int) -> int:
+    return max(1, -(-n_rows // size))
+
+
+# ------------------------------------------------------------------ records
+
+def best_performances(ratings: pd.DataFrame, competition: Optional[str] = None, n: int = 50) -> pd.DataFrame:
+    """Highest single-match ratings; ties broken by impact in runs."""
+    r = rated(ratings)
+    if competition:
+        r = r[r["competition"] == competition]
+    return r.sort_values(["rating", "total_impact"], ascending=False).head(n)
+
+
+def most_nine_plus(ratings: pd.DataFrame, competition: Optional[str] = None, n: int = 25) -> pd.DataFrame:
+    r = rated(ratings)
+    if competition:
+        r = r[r["competition"] == competition]
+    g = (r.assign(nine=r["rating"] >= 9.0).groupby(["player_id", "name"])
+         .agg(nine_plus=("nine", "sum"), matches=("match_id", "nunique")).reset_index())
+    g = g[g["nine_plus"] > 0]
+    g["pct"] = (100 * g["nine_plus"] / g["matches"]).round(1)
+    return g.sort_values(["nine_plus", "pct"], ascending=False).head(n)
+
+
+def best_averages(ratings: pd.DataFrame, competition: Optional[str] = None, min_matches: int = 30,
+                  n: int = 25) -> pd.DataFrame:
+    r = rated(ratings)
+    if competition:
+        r = r[r["competition"] == competition]
+    g = (r.groupby(["player_id", "name"]).agg(average=("rating", "mean"), matches=("match_id", "nunique"))
+         .reset_index())
+    g = g[g["matches"] >= min_matches]
+    return g.assign(average=g["average"].round(2)).sort_values("average", ascending=False).head(n)
+
+
+def best_seasons(ratings: pd.DataFrame, competition: Optional[str] = None, min_matches: int = 8,
+                 n: int = 25) -> pd.DataFrame:
+    """Highest average rating by a player in one calendar year of one competition."""
+    r = rated(ratings)
+    if competition:
+        r = r[r["competition"] == competition]
+    r = r.assign(year=r["match_date"].dt.year)
+    g = (r.groupby(["player_id", "name", "competition", "year"])
+         .agg(average=("rating", "mean"), matches=("match_id", "nunique")).reset_index())
+    g = g[g["matches"] >= min_matches]
+    return g.assign(average=g["average"].round(2)).sort_values("average", ascending=False).head(n)
+
+
+def most_consistent(ratings: pd.DataFrame, min_matches: int = 30, n: int = 25) -> pd.DataFrame:
+    """Smallest spread among players who are also good on average (above the 6.5 median)."""
+    c = consistency(ratings).reset_index()
+    c = c[(c["matches"] >= min_matches) & (c["average"] >= 6.5)]
+    return c.sort_values(["spread", "average"], ascending=[True, False]).head(n)
+
+
+# ------------------------------------------------------------------ head-to-head
+
+def matchup(matchups: pd.DataFrame, batter_id: str, bowler_id: str) -> pd.DataFrame:
+    """One batter against one bowler: a row per competition plus an "All" row."""
+    m = matchups[(matchups["batter_id"] == batter_id) & (matchups["bowler_id"] == bowler_id)]
+    if m.empty:
+        return m
+    total = m.sum(numeric_only=True).to_frame().T.assign(competition="All")
+    out = pd.concat([m, total], ignore_index=True)
+    return add_rates(out)
+
+
+def add_rates(df: pd.DataFrame) -> pd.DataFrame:
+    """Strike rate, average, dot-ball %, balls per dismissal, and runs vs par per 6 balls."""
+    balls = df["balls"].replace(0, np.nan)
+    outs = df["dismissals"].replace(0, np.nan)
+    return df.assign(
+        strike_rate=(100 * df["runs"] / balls).round(1),
+        average=(df["runs"] / outs).round(1),
+        dot_pct=(100 * df["dots"] / balls).round(1),
+        balls_per_dismissal=(df["balls"] / outs).round(1),
+        vs_par_per_over=(6 * df["runs_vs_par"] / balls).round(2),
+    )
+
+
+def opponents(matchups: pd.DataFrame, player_id: str, as_role: str = "batter",
+              min_balls: int = 12) -> pd.DataFrame:
+    """Everyone a batter has faced (or a bowler has bowled to), all competitions combined,
+    with at least `min_balls` balls between them. `vs_par_per_over` is from the batter's side:
+    positive means the batter came out on top."""
+    key, other = ("batter_id", "bowler_id") if as_role == "batter" else ("bowler_id", "batter_id")
+    mine = matchups[matchups[key] == player_id]
+    cols = ["balls", "runs", "dismissals", "dots", "fours", "sixes", "runs_vs_par", "matches"]
+    g = mine.groupby(other)[cols].sum().reset_index().rename(columns={other: "opponent_id"})
+    return add_rates(g[g["balls"] >= min_balls])
+
+
+# ------------------------------------------------------------------ venues
+
+def venue_key(matches: pd.DataFrame) -> pd.Series:
+    """Venue id from the Cricsheet register when known, else the venue name as written."""
+    vid = matches["venue_id"] if "venue_id" in matches.columns else pd.Series(None, index=matches.index)
+    return vid.fillna(matches["venue"])
+
+
+def venue_names(matches: pd.DataFrame) -> pd.Series:
+    """venue key -> display name (the register's unique name, else the name as written)."""
+    name = matches["venue_name"] if "venue_name" in matches.columns else matches["venue"]
+    return (matches.assign(_k=venue_key(matches), _n=name.fillna(matches["venue"]))
+            .drop_duplicates("_k").set_index("_k")["_n"])
+
+
+def venue_summary(matches: pd.DataFrame) -> pd.DataFrame:
+    """Per venue: matches, average first- and second-innings score (full 20-over first innings
+    only, so rain doesn't drag it down), and how often the side batting first won."""
+    m = matches.assign(_k=venue_key(matches))
+    full_first = m["inn1_balls"].fillna(0) >= 120
+    decided = m["result"] == "win"
+    first_won = decided & (m["winner"] == m["inn1_team"])
+    g = m.assign(_full=full_first, _r1=m["inn1_runs"].where(full_first), _r2=m["inn2_runs"],
+                 _dec=decided, _fw=first_won).groupby("_k")
+    out = pd.DataFrame({
+        "matches": g.size(),
+        "avg_first_innings": g["_r1"].mean().round(0),
+        "avg_second_innings": g["_r2"].mean().round(0),
+        "highest_total": g[["inn1_runs", "inn2_runs"]].max().max(axis=1),
+        "pct_won_batting_first": (100 * g["_fw"].sum() / g["_dec"].sum().replace(0, np.nan)).round(0),
+        "first_match": g["match_date"].min(),
+        "last_match": g["match_date"].max(),
+    })
+    out["name"] = venue_names(matches)
+    return out.sort_values("matches", ascending=False)
+
+
+def with_venue(ratings: pd.DataFrame, matches: pd.DataFrame) -> pd.DataFrame:
+    keys = matches.assign(venue_key=venue_key(matches))[["match_id", "venue_key"]]
+    return ratings.merge(keys, on="match_id", how="left")
+
+
+def venue_players(ratings: pd.DataFrame, matches: pd.DataFrame, venue: str,
+                  min_matches: int = 3) -> pd.DataFrame:
+    """Players with `min_matches`+ rated matches at a venue: average there, best there,
+    and the difference from their average everywhere else."""
+    r = with_venue(rated(ratings), matches)
+    here = r[r["venue_key"] == venue]
+    g = (here.groupby(["player_id", "name"])
+         .agg(matches=("match_id", "nunique"), average=("rating", "mean"), best=("rating", "max"))
+         .reset_index())
+    g = g[g["matches"] >= min_matches]
+    elsewhere = r[r["venue_key"] != venue].groupby("player_id")["rating"].mean().rename("elsewhere")
+    g = g.merge(elsewhere, on="player_id", how="left")
+    g["difference"] = (g["average"] - g["elsewhere"]).round(2)
+    return g.assign(average=g["average"].round(2), elsewhere=g["elsewhere"].round(2)) \
+            .sort_values("average", ascending=False)
+
+
+def player_venues(ratings: pd.DataFrame, matches: pd.DataFrame, player_id: str,
+                  min_matches: int = 3) -> pd.DataFrame:
+    """A player's venues with `min_matches`+ rated matches, best average first, with the
+    difference from their own average everywhere else."""
+    r = with_venue(rated(ratings[ratings["player_id"] == player_id]), matches)
+    if r.empty:
+        return pd.DataFrame(columns=["venue_key", "matches", "average", "difference"])
+    overall = r["rating"].mean()
+    g = r.groupby("venue_key").agg(matches=("match_id", "nunique"), average=("rating", "mean"),
+                                   total=("rating", "sum")).reset_index()
+    g = g[g["matches"] >= min_matches]
+    n = len(r)
+    # Compare with the player's average at every other ground, not with an average that
+    # includes this ground.
+    other = (r["rating"].sum() - g["total"]) / (n - g["matches"]).replace(0, np.nan)
+    g["difference"] = (g["average"] - other.fillna(overall)).round(2)
+    return g.drop(columns="total").assign(average=g["average"].round(2)) \
+            .sort_values("average", ascending=False)

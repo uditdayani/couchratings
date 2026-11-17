@@ -14,6 +14,9 @@ pages = [
     st.Page("views/leaderboard.py", title="Form leaderboard", icon=":material/leaderboard:", default=True),
     st.Page("views/player.py", title="Player", icon=":material/person:"),
     st.Page("views/match.py", title="Match", icon=":material/sports_cricket:"),
+    st.Page("views/records.py", title="Records", icon=":material/emoji_events:"),
+    st.Page("views/head_to_head.py", title="Head-to-head", icon=":material/swords:"),
+    st.Page("views/venues.py", title="Venues", icon=":material/stadium:"),
     st.Page("views/about.py", title="About", icon=":material/info:"),
 ]
 page = st.navigation(pages)

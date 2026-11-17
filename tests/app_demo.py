@@ -22,7 +22,7 @@ def build(seed: int = 7) -> dict:
     rng = np.random.default_rng(seed)
     squads = {team: [(f"{team[:3].lower()}{i:02d}", f"{team.split()[0][:1]}{i} {team.split()[-1]} Player")
                      for i in range(1, 12)] for teams in COMPETITIONS.values() for team in teams}
-    matches, ratings = [], []
+    matches, ratings, balls = [], [], []
     n = 0
     for comp, teams in COMPETITIONS.items():
         for k in range(18):
@@ -38,6 +38,7 @@ def build(seed: int = 7) -> dict:
             matches.append({
                 "match_id": mid, "match_date": date, "season": str(date.year), "event_name": comp,
                 "match_number": k + 1, "venue": f"{t1.split()[0]} Stadium", "city": t1.split()[0],
+                "venue_id": f"v_{t1.split()[0].lower()}", "venue_name": f"{t1.split()[0]} Stadium, {t1.split()[0]}",
                 "team_1": t1, "team_2": t2, "toss_winner": t1, "toss_decision": "bat",
                 "result": "win", "winner": t1 if first_wins else t2,
                 "win_by_runs": (r1 - r2) if first_wins else None,
@@ -69,7 +70,24 @@ def build(seed: int = 7) -> dict:
                         "par_runs_conceded": round(bowled * 1.35, 1) if bowled else 0.0,
                         "par_wickets": round(bowled * 0.05, 2) if bowled else 0.0,
                     })
+            # Batter v bowler: each side's top 7 against the other side's bowlers.
+            for bat_team, bowl_team in ((t1, t2), (t2, t1)):
+                for bi, (bat, _) in enumerate(squads[bat_team][:7]):
+                    for bowl, _ in squads[bowl_team][5:]:
+                        if rng.random() < 0.5:
+                            continue
+                        n_balls = int(rng.integers(1, 10))
+                        runs = int(rng.binomial(n_balls * 2, 0.7))
+                        out = int(rng.random() < 0.12)
+                        balls.append({
+                            "competition": comp, "batter_id": bat, "bowler_id": bowl, "matches": 1,
+                            "balls": n_balls, "runs": runs, "dismissals": out,
+                            "dots": int(rng.integers(0, n_balls + 1)), "fours": runs // 8,
+                            "sixes": runs // 12,
+                            "runs_vs_par": round(runs - 1.4 * n_balls - 9.0 * out, 2)})
     ratings = pd.DataFrame(ratings)
+    matchups = (pd.DataFrame(balls).groupby(["competition", "batter_id", "bowler_id"])
+                .sum(numeric_only=True).reset_index())
     matches = pd.DataFrame(matches)
 
     # Form, computed the same way as the pipeline (last 10, halving every 5).
@@ -104,7 +122,8 @@ def build(seed: int = 7) -> dict:
         {"check": "player_of_match_top3", "scope": "All", "value": 81.6, "target": ">= 70%",
          "passed": True, "detail": "4564 matches", "checked_at": pd.Timestamp("2026-11-13 12:00")},
     ])
-    return {"ratings": ratings, "matches": matches, "form": form, "meta": meta, "validation": validation}
+    return {"ratings": ratings, "matches": matches, "form": form, "meta": meta, "validation": validation,
+            "matchups": matchups}
 
 
 def write(folder: str, seed: int = 7) -> dict:

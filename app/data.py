@@ -7,6 +7,9 @@ Edition warehouse is barely used.
 Demo mode: set the environment variable CRICKET_RATINGS_DATA_DIR to a folder of
 <table>.parquet files and the app reads those instead (used by the tests and for running
 the dashboard without Databricks).
+
+`load_all` loads what every page needs up front; larger, page-specific datasets
+(`matchups`) load the first time a page asks for them.
 """
 import os
 
@@ -14,7 +17,7 @@ import pandas as pd
 import streamlit as st
 
 CACHE_SECONDS = 12 * 3600
-OPTIONAL = {"validation"}   # the app still works if these tables don't exist yet
+OPTIONAL = {"validation", "matchups"}   # the app still works if these tables don't exist yet
 
 
 class DataError(Exception):
@@ -31,8 +34,33 @@ def _secrets(section: str) -> dict:
 def settings() -> dict:
     db, app = _secrets("databricks"), _secrets("app")
     return {"catalog": db.get("catalog", "workspace"),
-            "version": app.get("model_version", "v2"),
+            "version": app.get("model_version", "v3"),
             "demo_dir": os.environ.get("CRICKET_RATINGS_DATA_DIR")}
+
+
+def matches_query(c: str, venue_register: bool = True) -> str:
+    """Matches with both innings' scores. With the venue register (silver.venue_names and
+    silver.venues), each match also gets the register's venue id and unique name."""
+    venue_cols = ("vn.venue_id, v.unique_name AS venue_name" if venue_register
+                  else "CAST(NULL AS STRING) AS venue_id, CAST(NULL AS STRING) AS venue_name")
+    venue_joins = (f"""
+            LEFT JOIN {c}.silver.venue_names vn ON vn.name = m.venue
+            LEFT JOIN {c}.silver.venues v ON v.venue_id = vn.venue_id""" if venue_register else "")
+    return f"""
+            SELECT m.match_id, m.match_date, m.season, m.event_name, m.match_number, m.venue,
+                   {venue_cols},
+                   m.city, m.team_1, m.team_2, m.toss_winner, m.toss_decision, m.result,
+                   m.winner, m.win_by_runs, m.win_by_wickets, m.method, m.super_over_winner,
+                   m.player_of_match_ids,
+                   i1.batting_team AS inn1_team, i1.total_runs AS inn1_runs,
+                   i1.wickets AS inn1_wickets, i1.legal_balls AS inn1_balls,
+                   i2.batting_team AS inn2_team, i2.total_runs AS inn2_runs,
+                   i2.wickets AS inn2_wickets, i2.legal_balls AS inn2_balls
+            FROM {c}.silver.matches m
+            LEFT JOIN {c}.silver.innings i1 ON i1.match_id = m.match_id AND i1.innings_no = 1
+            LEFT JOIN {c}.silver.innings i2 ON i2.match_id = m.match_id AND i2.innings_no = 2{venue_joins}
+            WHERE m.match_id IN (SELECT DISTINCT match_id FROM {c}.gold.player_match_ratings
+                                 WHERE version = :version)"""
 
 
 def queries(c: str) -> dict:
@@ -43,20 +71,11 @@ def queries(c: str) -> dict:
             FROM {c}.gold.player_match_ratings r
             LEFT JOIN {c}.silver.players p ON p.player_id = r.player_id
             WHERE r.version = :version""",
-        "matches": f"""
-            SELECT m.match_id, m.match_date, m.season, m.event_name, m.match_number, m.venue,
-                   m.city, m.team_1, m.team_2, m.toss_winner, m.toss_decision, m.result,
-                   m.winner, m.win_by_runs, m.win_by_wickets, m.method, m.super_over_winner,
-                   m.player_of_match_ids,
-                   i1.batting_team AS inn1_team, i1.total_runs AS inn1_runs,
-                   i1.wickets AS inn1_wickets, i1.legal_balls AS inn1_balls,
-                   i2.batting_team AS inn2_team, i2.total_runs AS inn2_runs,
-                   i2.wickets AS inn2_wickets, i2.legal_balls AS inn2_balls
-            FROM {c}.silver.matches m
-            LEFT JOIN {c}.silver.innings i1 ON i1.match_id = m.match_id AND i1.innings_no = 1
-            LEFT JOIN {c}.silver.innings i2 ON i2.match_id = m.match_id AND i2.innings_no = 2
-            WHERE m.match_id IN (SELECT DISTINCT match_id FROM {c}.gold.player_match_ratings
-                                 WHERE version = :version)""",
+        "matches": matches_query(c),
+        "matchups": f"""
+            SELECT competition, batter_id, bowler_id, matches, balls, runs, dismissals,
+                   dots, fours, sixes, runs_vs_par
+            FROM {c}.gold.matchups WHERE version = :version""",
         "form": f"""
             SELECT scope, player_id, name, form_rating, matches_counted, last_match_date,
                    active, leaderboard_rank
@@ -84,9 +103,16 @@ def _from_databricks(name: str, cfg: dict) -> pd.DataFrame:
     if missing:
         raise DataError(f"Missing Databricks secrets: {', '.join(missing)}. "
                         "Add them in the app's Settings → Secrets.")
+    sql_text = queries(cfg["catalog"])[name]
     with sql.connect(server_hostname=db["server_hostname"], http_path=db["http_path"],
                      access_token=db["access_token"]) as conn, conn.cursor() as cur:
-        cur.execute(queries(cfg["catalog"])[name], {"version": cfg["version"]})
+        try:
+            cur.execute(sql_text, {"version": cfg["version"]})
+        except Exception:
+            if name != "matches":
+                raise
+            # Before the venue register is loaded (03_silver_build), show venues as written.
+            cur.execute(matches_query(cfg["catalog"], venue_register=False), {"version": cfg["version"]})
         return cur.fetchall_arrow().to_pandas()
 
 
@@ -110,6 +136,10 @@ def _load(name: str, demo_dir, catalog: str, version: str) -> pd.DataFrame:
         if name in OPTIONAL:
             return pd.DataFrame()
         raise DataError(f"Couldn't load {name}: {e}") from e
+    if name == "matches":                    # demo data or tables without the venue register
+        for col in ("venue_id", "venue_name"):
+            if col not in df.columns:
+                df[col] = None
     if name == "ratings":                    # tables built before par existed
         for col in ("par_runs_conceded", "par_wickets"):
             if col not in df.columns:

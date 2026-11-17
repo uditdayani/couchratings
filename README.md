@@ -2,7 +2,7 @@
 
 Sofascore-style 0–10 match ratings and form ratings for T20 cricketers, built as a medallion data pipeline (Bronze → Silver → Gold) on Databricks Free Edition with a Streamlit dashboard.
 
-**Status:** V2.1 – better ratings (rain-shortened innings, role-relative ratings, smoother expected-runs table). V1 is tagged `v1.0`.
+**Status:** V2.2 – dashboard features (records, head-to-heads, venues, consistency, full match history). V2.1 (better ratings) is tagged `v2.1`, V1 `v1.0`.
 
 **Live dashboard:** https://slogonomics.streamlit.app/
 
@@ -64,6 +64,8 @@ scripts/download_cricsheet.py  Local fallback download
 | Silver | `silver.deliveries` | ball, including wides and no-balls |
 | Silver | `silver.match_players` | player in a match |
 | Silver | `silver.players` | player (Cricsheet Register ID) |
+| Silver | `silver.venues` | ground (Cricsheet venue register): id, unique name, ESPNcricinfo id |
+| Silver | `silver.venue_names` | every spelling of a ground used in match data → its venue id (spellings shared by two grounds are left out) |
 | Gold | `gold.run_expectancy` | (model version, balls left, wickets down): expected runs to the end of the innings |
 | Gold | `gold.environment_factors` | (model version, competition, year): how high-scoring that competition-season was |
 | Gold | `gold.venue_factors` | (model version, venue): how high-scoring the ground is within its competition |
@@ -71,6 +73,7 @@ scripts/download_cricsheet.py  Local fallback download
 | Gold | `gold.player_match_impact` | (model version, match, player): batting, bowling and fielding impact in runs, plus counting stats |
 | Gold | `gold.player_match_ratings` | (model version, match, player): 0–10 rating, percentile within competition, impact and stats |
 | Gold | `gold.player_form` | (model version, scope, player): form rating, matches counted, leaderboard rank; scope is "All" or a competition |
+| Gold | `gold.matchups` | (model version, competition, batter, bowler): balls, runs, dismissals credited to the bowler, dots, 4s, 6s, and runs vs par |
 | Gold | `gold.par_rates` | (model version, over, wickets-down band): typical bowler's runs and wickets per legal ball |
 | Gold | `gold.model_versions` | model version: when and how it was fitted |
 | Ops | `ops.ingest_log` | file processed at each stage (landed, parsed, quarantined) |
@@ -173,13 +176,16 @@ All 26 checks pass.
 
 ## Dashboard
 
-A four-page Streamlit app (`app/`), deployed on Streamlit Community Cloud with main file `app/streamlit_app.py`:
+A seven-page Streamlit app (`app/`), deployed on Streamlit Community Cloud with main file `app/streamlit_app.py`:
 
 | Page | Shows |
 | --- | --- |
 | Form leaderboard | Top players by form, overall or per competition; click a row to open the player |
-| Player | Current form, average and best rating, last 20 ratings as a colour-banded chart, where the impact comes from, and a match log; click a match to open it |
+| Player | Nationality and every team played for, current form, consistency (median, spread, good and off days), last 20 ratings as a colour-banded chart, where the impact comes from, best grounds, most-faced bowlers and batters, and the full match history with filters (competition, year, role) and pages; click a match to open it |
 | Match | Score, result, and both teams' players rated with their batting, bowling (with par: the wickets/runs a typical bowler gets from the same overs with the same wickets down, e.g. `1/34 (4.0) · par 1.2/31`) and fielding lines; the official player of the match is starred |
+| Records | Best single performances, most 9+ ratings, best career averages, best seasons and the most consistent players, overall or per competition |
+| Head-to-head | Any batter against any bowler: runs, balls, dismissals, strike rate, dot balls and runs vs par, per competition |
+| Venues | Every ground (spellings merged with Cricsheet's venue register): average scores, how often the side batting first wins, who rates best there compared with elsewhere, best performances and recent matches |
 | About | Method, rating bands, model version, latest data, live validation results and known limitations |
 
 Each Gold table is read once from the SQL warehouse and cached for 12 hours, so pages respond instantly and the warehouse is barely used. Player and match pages have shareable links (`?player=…`, `?match=…`).

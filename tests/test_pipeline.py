@@ -190,3 +190,27 @@ def test_checks_catch_broken_rows(spark, built):
     assert not results["target_reconciles_with_first_innings"]["passed"]
     with pytest.raises(RuntimeError, match="runs_total_adds_up"):
         quality.save_and_enforce(spark, t, list(results.values()), "run-2")
+
+
+# ------------------------------------------------------------------- venues
+
+def test_venue_register_maps_every_spelling_once(spark, built, tmp_path):  # noqa: F811
+    t, _, _ = built
+    used = [r.venue for r in spark.table(t.silver_matches).select("venue").distinct().collect()]
+    (tmp_path / "venues.csv").write_text(
+        "identifier,name,unique_name,key_cricinfo,key_cricinfo_2\n"
+        f'v1,"{used[0]}","{used[0]}, Testville",111,\n'
+        'v2,Twin Oval,"Twin Oval, North",222,\n'
+        'v3,Twin Oval,"Twin Oval, South",333,\n')
+    (tmp_path / "venue_names.csv").write_text(
+        f'identifier,name\nv1,"{used[0]}, Old Name"\nv2,North Twin\n')
+    summary = silver.build_venues(spark, t, str(tmp_path))
+    names = {r.name: r.venue_id for r in spark.table(t.silver_venue_names).collect()}
+    assert names[used[0]] == "v1" and names[f"{used[0]}, Old Name"] == "v1"
+    assert names[f"{used[0]}, Testville"] == "v1"                       # the unique name too
+    assert "Twin Oval" not in names                                       # two grounds: left out
+    assert names["Twin Oval, South"] == "v3" and names["North Twin"] == "v2"
+    assert summary["ambiguous_spellings_dropped"] == 1
+    assert summary["match_venues_not_in_register"] == len(used) - 1
+    v1 = spark.table(t.silver_venues).filter("venue_id = 'v1'").first()
+    assert v1.unique_name == f"{used[0]}, Testville" and v1.key_cricinfo == "111"

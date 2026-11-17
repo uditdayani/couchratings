@@ -11,6 +11,8 @@
 # MAGIC | `silver.deliveries` | ball, including wides and no-balls |
 # MAGIC | `silver.match_players` | player in a match |
 # MAGIC | `silver.players` | player (Cricsheet Register ID) |
+# MAGIC | `silver.venues` | ground (Cricsheet venue register) |
+# MAGIC | `silver.venue_names` | spelling of a ground used in match data, with its venue id |
 # MAGIC
 # MAGIC Files that can't be used (bad JSON, not T20) are quarantined in `ops.ingest_log` with a reason.
 # MAGIC The first run processes ~4,900 matches and can take a few minutes; later runs only touch new files.
@@ -29,6 +31,25 @@ run_id = str(uuid.uuid4())
 
 counts = silver.build_silver(spark, t, run_id)
 print(counts)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Venue register
+# MAGIC Joins every spelling of a ground ("Wankhede Stadium", "Wankhede Stadium, Mumbai") to one venue,
+# MAGIC for the dashboard's Venues page. Needs `02_bronze_land` with `venue_register = yes`.
+
+# COMMAND ----------
+
+REGISTER_DIR = f"/Volumes/{t.catalog}/bronze/raw_files/register"
+if os.path.exists(f"{REGISTER_DIR}/venues.csv"):
+    print(silver.build_venues(spark, t, REGISTER_DIR))
+    display(spark.sql(f"""
+        SELECT m.venue AS not_in_register, count(*) AS matches
+        FROM {t.silver_matches} m LEFT ANTI JOIN {t.silver_venue_names} n ON n.name = m.venue
+        GROUP BY m.venue ORDER BY matches DESC"""))
+else:
+    print("Venue register not downloaded yet: run 02_bronze_land with venue_register = yes.")
 
 # COMMAND ----------
 
