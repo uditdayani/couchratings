@@ -24,7 +24,7 @@ from pyspark.sql import functions as F
 from . import storage
 from .config import Tables
 from .gold_model import MAX_WICKETS, TOTAL_BALLS, competition_col
-from .schema import NOT_DISMISSALS, wickets_band
+from .schema import BOWLER_WICKET_KINDS, NOT_DISMISSALS, wickets_band
 
 # Share of a wicket's value earned by the bowler and by the fielders (starting values, tuned in week 6).
 BOWLER_SHARE = {"bowled": 1.0, "lbw": 1.0, "hit wicket": 1.0, "caught and bowled": 1.0,
@@ -242,6 +242,31 @@ def player_impact(bv: DataFrame, match_players: DataFrame) -> DataFrame:
              "total_impact")
 
 
+def matchups(bv: DataFrame) -> DataFrame:
+    """Batter against bowler, per competition: matches, balls (wides excluded), runs off the
+    bat, dismissals credited to the bowler, dots, fours, sixes, and runs vs par: the batter's
+    credit on those balls (runs + ball cost), plus the wicket cost when this bowler got him out.
+    Positive runs_vs_par means the batter came out ahead of a typical batter in the same
+    situations."""
+    faced = F.col("extras_wides") == 0
+    out_to_bowler = F.filter("wickets", lambda w: (w["player_out_id"] == F.col("batter_id"))
+                             & w["kind"].isin(*BOWLER_WICKET_KINDS))
+    d = (bv.filter(F.col("batter_id").isNotNull() & F.col("bowler_id").isNotNull())
+         .withColumn("out", (F.size(out_to_bowler) > 0).cast("int"))
+         .withColumn("cost", F.when(F.col("dismissals") > 0, F.col("wicket_cost") / F.col("dismissals"))
+                      .otherwise(F.lit(0.0))))
+    return (d.groupBy("competition", "batter_id", "bowler_id").agg(
+        F.countDistinct("match_id").alias("matches"),
+        F.sum(faced.cast("int")).alias("balls"),
+        F.sum("runs_batter").alias("runs"),
+        F.sum("out").alias("dismissals"),
+        F.sum((faced & (F.col("runs_batter") == 0)).cast("int")).alias("dots"),
+        F.sum((F.col("runs_batter") == 4).cast("int")).alias("fours"),
+        F.sum((F.col("runs_batter") == 6).cast("int")).alias("sixes"),
+        F.round(F.sum(F.col("runs_batter") + F.col("ball_cost") + F.col("out") * F.col("cost")), 3)
+         .alias("runs_vs_par")))
+
+
 def run_ratings(spark: SparkSession, t: Tables, version: str) -> dict:
     """Value every ball and credit players for one model version (re-running replaces it)."""
     def of_version(table):
@@ -261,6 +286,9 @@ def run_ratings(spark: SparkSession, t: Tables, version: str) -> dict:
     stored = of_version(t.gold_ball_values)
     impact = player_impact(stored, spark.table(t.silver_match_players)).withColumn("version", F.lit(version))
     storage.replace_rows(spark, t.gold_player_match_impact, impact, key, "version")
+    storage.replace_rows(spark, t.gold_matchups, matchups(stored).withColumn("version", F.lit(version)),
+                         key, "version")
     return {"version": version,
             "balls_valued": stored.count(),
-            "player_matches": of_version(t.gold_player_match_impact).count()}
+            "player_matches": of_version(t.gold_player_match_impact).count(),
+            "matchups": of_version(t.gold_matchups).count()}

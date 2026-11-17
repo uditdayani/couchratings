@@ -32,6 +32,20 @@ def band(rating) -> tuple:
     return BANDS[-1][1], BANDS[-1][2]
 
 
+def player_teams(ratings: pd.DataFrame) -> pd.DataFrame:
+    """Per player: `country` = most recent international side (ignoring composite sides such
+    as "ICC World XI"), `club` = most recent non-international team. `label` is the country,
+    or the club for players who never played a T20I."""
+    df = ratings.sort_values("match_date")
+    is_intl = df["competition"].str.startswith("T20I")
+    composite = df["team"].str.contains(r"\bXI\b", regex=True, na=False)
+    country = df[is_intl & ~composite].groupby("player_id")["team"].last().rename("country")
+    club = df[~is_intl].groupby("player_id")["team"].last().rename("club")
+    out = pd.concat([country, club], axis=1)
+    out["label"] = out["country"].fillna(out["club"]).fillna("")
+    return out
+
+
 def fmt_rating(rating) -> str:
     return "–" if _missing(rating) else f"{rating:.1f}"
 
@@ -99,6 +113,17 @@ def style_ratings(df: pd.DataFrame, column: str = "Rating"):
     def colour(v):
         _, c = band(v)
         return f"background-color: {c}; color: white; font-weight: 600; text-align: center"
+    def number(v):
+        # Other decimal columns: at most 2 decimals, no trailing zeros ("47.6", "1.25", "12").
+        if _missing(v):
+            return "–"
+        return f"{v:.2f}".rstrip("0").rstrip(".")
+    # Streamlit doesn't always apply a Styler's number formats, so other decimal columns are
+    # turned into text here.
+    df = df.copy()
+    for c in df.columns:
+        if c != column and pd.api.types.is_float_dtype(df[c]):
+            df[c] = df[c].map(number)
     return df.style.map(colour, subset=[column]).format({column: fmt_rating})
 
 

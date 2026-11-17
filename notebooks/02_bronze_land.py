@@ -10,6 +10,7 @@
 # MAGIC | --- | --- | --- |
 # MAGIC | `download` | `none` (zips from week 1) | `recent`: fetch Cricsheet's last-7-days men's zip |
 # MAGIC | `sources` | blank = every zip in the volume | `recent_male` |
+# MAGIC | `venue_register` | `yes` | `yes`: refresh Cricsheet's venue register (two small CSVs) |
 # MAGIC
 # MAGIC The recent zip holds every format and league; Silver keeps only IPL and men's T20Is.
 
@@ -24,9 +25,10 @@ from cricket_ratings.config import Tables, ensure_schemas
 dbutils.widgets.text("catalog", "workspace")
 dbutils.widgets.dropdown("download", "none", ["none", "recent"])
 dbutils.widgets.text("sources", "")          # e.g. recent_male; blank = all
+dbutils.widgets.dropdown("venue_register", "yes", ["yes", "no"])
 t = Tables(catalog=dbutils.widgets.get("catalog"))
 VOLUME = f"/Volumes/{t.catalog}/bronze/raw_files"
-ZIP_DIR, JSON_DIR = f"{VOLUME}/zips", f"{VOLUME}/json"
+ZIP_DIR, JSON_DIR, REGISTER_DIR = f"{VOLUME}/zips", f"{VOLUME}/json", f"{VOLUME}/register"
 SOURCES = [s.strip() for s in dbutils.widgets.get("sources").split(",") if s.strip()]
 run_id = str(uuid.uuid4())
 
@@ -43,6 +45,16 @@ print("Run", run_id)
 if dbutils.widgets.get("download") == "recent":
     size = bronze.download(bronze.RECENT_URL, f"{ZIP_DIR}/{bronze.RECENT_ZIP}")
     print(f"Downloaded {bronze.RECENT_URL} ({size / 1e6:.1f} MB)")
+
+# COMMAND ----------
+
+# MAGIC %md ## Venue register (one id per ground, and every spelling of it)
+
+# COMMAND ----------
+
+if dbutils.widgets.get("venue_register") == "yes":
+    sizes = bronze.download_venue_register(REGISTER_DIR)
+    print({name: f"{size / 1e3:.0f} KB" for name, size in sizes.items()})
 
 # COMMAND ----------
 

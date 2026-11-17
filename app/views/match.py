@@ -31,7 +31,8 @@ m = matches[matches["match_id"] == mid].iloc[0]
 
 # --- header
 st.title(f"{m['team_1']} v {m['team_2']}")
-where = ", ".join(str(x) for x in (m["venue"], m["city"]) if pd.notna(x) and x)
+ground = m["venue_name"] if pd.notna(m.get("venue_name")) else m["venue"]
+where = ", ".join(str(x) for x in (ground, m["city"]) if pd.notna(x) and x and str(x) not in str(ground))
 st.caption(f"{m['event_name'] or comp} · {m['match_date']:%d %B %Y} · {where}")
 s1, s2 = st.columns(2)
 s1.metric(str(m["inn1_team"] or ""), ui.score_line(m["inn1_runs"], m["inn1_wickets"], m["inn1_balls"]) or "–")

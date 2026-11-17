@@ -205,3 +205,23 @@ def test_byes_are_charged_to_the_keeper(spark):
     rows = [(r.match_id, r.player_id, r.fielding, r.byes_conceded)
             for r in gold_ratings.keeper_byes(bv, xi).collect()]
     assert rows == [("m2", "k1", -4.0, 4)]
+
+
+def test_matchups_batter_against_bowler(spark, built):  # noqa: F811
+    # Same hand-worked innings as at the top of this file.
+    t, _, _ = built
+    bv, _ = impact(spark, t)
+    first = bv.filter("match_id = '1000001' AND innings_no = 1")
+    m = {(r.batter_id, r.bowler_id): r for r in gold_ratings.matchups(first).collect()}
+    a1b1 = m[(A1, B1)]
+    assert (a1b1.balls, a1b1.runs, a1b1.dismissals, a1b1.fours) == (3, 6, 0, 1)   # the wide isn't a ball
+    assert a1b1.runs_vs_par == pytest.approx(3 + 0 + 0.1)
+    assert (m[(A1, B2)].sixes, m[(A1, B2)].runs_vs_par) == (1, pytest.approx(5.1))
+    a2b1 = m[(A2, B1)]
+    assert (a2b1.balls, a2b1.dismissals, a2b1.dots) == (1, 1, 1)
+    assert a2b1.runs_vs_par == pytest.approx(-1 - 11.7)                 # the catch counts against him
+    a3b1 = m[(A3, B1)]
+    assert (a3b1.balls, a3b1.runs) == (3, 2)                              # no-ball faced, leg-bye faced
+    assert a3b1.runs_vs_par == pytest.approx(2 - 0.9 - 0.9)
+    a3b2 = m[(A3, B2)]
+    assert (a3b2.dismissals, a3b2.runs_vs_par) == (0, pytest.approx(-0.9))   # run out: not the bowler's

@@ -12,7 +12,8 @@
 # MAGIC | Fielders | their share of wickets: caught 20%, stumped 30%, run out 100% (bowler gets the rest) |
 # MAGIC
 # MAGIC Expected runs = RE(balls left, wickets) × environment factor × venue factor, from the model
-# MAGIC version below (run `05_gold_model` first). Writes `gold.ball_values` and `gold.player_match_impact`.
+# MAGIC version below (run `05_gold_model` first). Writes `gold.ball_values`, `gold.player_match_impact`
+# MAGIC and `gold.matchups` (every batter against every bowler, for the dashboard's Head-to-head page).
 # MAGIC Impacts are in **runs**; week 5 turns them into 0–10 ratings.
 
 # COMMAND ----------
@@ -24,7 +25,7 @@ from cricket_ratings import gold_ratings
 from cricket_ratings.config import Tables
 
 dbutils.widgets.text("catalog", "workspace")
-dbutils.widgets.text("model_version", "v2")
+dbutils.widgets.text("model_version", "v3")
 t = Tables(catalog=dbutils.widgets.get("catalog"))
 VERSION = dbutils.widgets.get("model_version")
 

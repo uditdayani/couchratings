@@ -8,7 +8,7 @@ later steps don't run and you get an email.
 
 | # | Task name | Notebook | Parameters | Depends on |
 | --- | --- | --- | --- | --- |
-| 1 | `land_bronze` | `notebooks/02_bronze_land` | `catalog` = `workspace`, `download` = `recent`, `sources` = `recent_male` | – |
+| 1 | `land_bronze` | `notebooks/02_bronze_land` | `catalog` = `workspace`, `download` = `recent`, `sources` = `recent_male` (`venue_register` defaults to `yes`) | – |
 | 2 | `build_silver` | `notebooks/03_silver_build` | `catalog` = `workspace` | `land_bronze` |
 | 3 | `silver_checks` | `notebooks/04_silver_checks` | `catalog` = `workspace` | `build_silver` |
 | 4 | `ratings` | `notebooks/06_gold_ratings` | `catalog` = `workspace`, `model_version` = `v3` | `silver_checks` |
