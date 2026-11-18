@@ -1,8 +1,8 @@
 # Daily job: set-up guide
 
 One Databricks job runs the pipeline every morning: download new matches, update Bronze and
-Silver, check data quality, rebuild ratings and form, then validate. If any step fails, the
-later steps don't run and you get an email.
+Silver, check data quality, rebuild ratings and form, validate, then publish the dashboard's
+data as Parquet files. If any step fails, the later steps don't run and you get an email.
 
 ## Tasks
 
@@ -14,6 +14,12 @@ later steps don't run and you get an email.
 | 4 | `ratings` | `notebooks/06_gold_ratings` | `catalog` = `workspace`, `model_version` = `v3` | `silver_checks` |
 | 5 | `scale_and_form` | `notebooks/07_gold_scale_form` | `catalog` = `workspace`, `model_version` = `v3` | `ratings` |
 | 6 | `validation` | `notebooks/08_validation` | `catalog` = `workspace`, `model_version` = `v3` | `scale_and_form` |
+| 7 | `export_parquet` | `notebooks/09_export_parquet` | `catalog` = `workspace`, `model_version` = `v3` | `validation` |
+
+Task 7 needs a GitHub token stored once as a Databricks secret (see the top of notebook 09).
+Because it runs after validation, the dashboard never receives ratings that failed a check.
+
+`10_player_photos` isn't either: run it by hand once a month for new players' photos.
 
 `05_gold_model` is **not** in the daily job: the run-expectancy table is only re-fitted when
 the model changes (as a new version, e.g. `v4`).

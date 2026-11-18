@@ -30,13 +30,22 @@ mine["opponent"] = mine.apply(lambda r: r["team_2"] if r["team"] == r["team_1"] 
 mine = mine.sort_values("match_date", ascending=False)
 mr = mine[mine["involved"]]
 
-st.title(players.loc[players["player_id"] == pid, "name"].iloc[0])
+photo = data.load("photos")
+photo = photo[photo["player_id"] == pid] if not photo.empty else photo
+head = st.container()
+if not photo.empty:
+    pic, head = st.columns([1, 4], vertical_alignment="center")
+    p = photo.iloc[0]
+    pic.image(p["image_url"], use_container_width=True)
+    credit = " · ".join(str(x) for x in (p["artist"], p["license"]) if isinstance(x, str) and x)
+    pic.caption(f"[Photo]({p['page_url']}){': ' + credit if credit else ''}, via Wikimedia Commons")
+head.title(players.loc[players["player_id"] == pid, "name"].iloc[0])
 country = teams["country"].get(pid) if pid in teams.index else None
 club = teams["club"].get(pid) if pid in teams.index else None
 parts = [str(country)] if isinstance(country, str) else []
 if isinstance(club, str):
     parts.append(f"last IPL team: {club}" if parts else club)
-st.caption(" · ".join(parts + [f"{len(mr)} rated T20 matches"]))
+head.caption(" · ".join(parts + [f"{len(mr)} rated T20 matches"]))
 
 # --- headline numbers
 my_form = form[form["player_id"] == pid].set_index("scope")
@@ -47,6 +56,12 @@ c1.metric("Current form", ui.fmt_rating(overall) if overall is not None else "�
 c2.metric("Average rating", ui.fmt_rating(mr["rating"].mean()) if len(mr) else "–")
 c3.metric("Best rating", ui.fmt_rating(mr["rating"].max()) if len(mr) else "–")
 c4.metric("Ratings of 9+", int((mr["rating"] >= 9).sum()))
+
+bm = stats.player_big_matches(ratings, matches, pid)
+if bm["matches"]:
+    diff = "" if bm["difference"] is None else f", {bm['difference']:+.2f} vs his other matches"
+    st.caption(f"Big matches: {bm['average']:.2f} average in {bm['matches']} knockout "
+               f"match{'es' if bm['matches'] > 1 else ''}{diff}")
 
 per_comp = my_form.drop(index="All", errors="ignore")
 if not per_comp.empty:

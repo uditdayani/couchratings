@@ -50,6 +50,10 @@ class Tables:
         return self._t("silver", "venue_names")
 
     @property
+    def silver_player_photos(self) -> str:
+        return self._t("silver", "player_photos")
+
+    @property
     def gold_matchups(self) -> str:
         return self._t("gold", "matchups")
 

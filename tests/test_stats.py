@@ -151,3 +151,101 @@ def test_venue_players_and_player_venues():
     pv = stats.player_venues(r, allm, "gill").set_index("venue_key")
     assert pv.loc["w1", "average"] == 9.0 and pv.loc["w1", "difference"] == 3.0
     assert pv.loc["e", "difference"] == -3.0
+
+
+def test_verdict_judges_against_other_batters_facing_the_same_bowler():
+    # An elite death bowler: other batters are well below par against him. A batter at
+    # roughly par against him (the Dhoni v Bhuvneshwar case) has the upper hand.
+    rows = [["IPL", "dhoni", "elite", 12, 60, 102, 0, 17, 6, 6, 4.9]]
+    rows += [["IPL", f"b{i}", "elite", 3, 30, 35, 3, 14, 3, 1, -8.0] for i in range(10)]
+    rows += [["IPL", "dhoni", f"x{i}", 5, 40, 70, 2, 10, 5, 4, 6.0] for i in range(5)]
+    m = pd.DataFrame(rows, columns=MATCHUP_COLS)
+    ctx = stats.context(m, "dhoni", "elite")
+    assert ctx["pair"]["vs_par_per_over"] == pytest.approx(0.49, abs=0.01)
+    assert ctx["others_v_bowler"]["vs_par_per_over"] == pytest.approx(-1.6, abs=0.01)
+    assert ctx["others_v_bowler"]["balls_per_dismissal"] == 10
+    assert ctx["batter_v_others"]["balls"] == 200
+    assert stats.verdict(ctx) == "batter"
+    # The same numbers against a bowler others also score freely against: even.
+    easy = m.assign(runs_vs_par=np.where(m["bowler_id"] == "elite",
+                                         np.where(m["batter_id"] == "dhoni", 4.9, 2.0), m["runs_vs_par"]))
+    assert stats.verdict(stats.context(easy, "dhoni", "elite")) == "even"
+    assert stats.verdict(stats.context(m.assign(balls=5), "dhoni", "elite")) == "too few"
+
+
+def test_big_matches():
+    m = pd.DataFrame({"match_id": ["f", "q", "l1", "l2", "s8"],
+                      "event_stage": ["Final", "Qualifier 1", None, None, "Super 8"]})
+    assert stats.big_match_ids(m) == {"f", "q"}                           # Super 8 is a group stage
+    rows = [perf("clutch", 9.0, "2024-05-26", mid="f"), perf("clutch", 8.6, "2024-05-21", mid="q"),
+            perf("clutch", 6.0, "2024-04-01", mid="l1"), perf("clutch", 6.4, "2024-04-05", mid="l2"),
+            perf("other", 5.0, "2024-05-26", mid="f")]
+    r = frame(rows)
+    b = stats.big_match_players(r, m, min_matches=2)
+    assert list(b["player_id"]) == ["clutch"]                              # other: only 1 big match
+    assert b.iloc[0]["average"] == 8.8 and b.iloc[0]["difference"] == 2.6
+    me = stats.player_big_matches(r, m, "clutch")
+    assert me == {"matches": 2, "average": 8.8, "difference": 2.6}
+    assert stats.player_big_matches(r, m.assign(event_stage=None), "clutch")["matches"] == 0
+
+
+def season(pid, n, rating, faced=20, bowled=0, stumpings=0, stage="top order", team="Alpha"):
+    return [perf(pid, rating, f"2024-04-{i + 1:02d}", comp="IPL", team=team, mid=f"{pid}{i}",
+                 balls_faced=faced, balls_bowled=bowled, stumpings=stumpings, batting_stage=stage)
+            for i in range(n)]
+
+
+def test_team_of_the_season_picks_by_role():
+    rows = []
+    rows += season("keeper", 10, 7.5, stumpings=1, stage="middle order")
+    rows += season("keeper2", 10, 7.9, stumpings=1)                        # better keeper
+    for i in range(6):
+        rows += season(f"bat{i}", 10, 7.0 + i * 0.2, stage="opener" if i == 5 else "top order")
+    for i in range(3):
+        rows += season(f"ar{i}", 10, 7.0 + i * 0.2, faced=15, bowled=24, stage="finisher")
+    for i in range(6):
+        rows += season(f"bowl{i}", 10, 7.0 + i * 0.2, faced=2, bowled=24, stage="finisher")
+    rows += season("flash", 2, 10.0)                                       # too few matches
+    rows += season("short", 6, 9.0)                                        # 6 matches of 9.0
+    xi = stats.team_of_season(frame(rows), "IPL", 2024, min_matches=6)
+    assert len(xi) == 11
+    assert xi["role"].value_counts().to_dict() == {"batter": 4, "bowler": 4, "all-rounder": 2,
+                                                   "wicketkeeper": 1}
+    assert "keeper2" in set(xi["player_id"]) and "keeper" not in set(xi["player_id"])
+    assert "flash" not in set(xi["player_id"]) and "short" in set(xi["player_id"])
+    assert xi.iloc[0]["player_id"] == "bat5"                               # the opener bats first
+    assert list(xi["role"].tail(4)) == ["bowler"] * 4
+    # (6 x 9.0 + 3 x 6.5) / 9 = 8.17: shrunk towards 6.5 for a short season
+    assert xi.set_index("player_id").loc["short", "score"] == pytest.approx(8.17, abs=0.01)
+
+
+def test_team_of_the_season_fills_a_short_role():
+    rows = []
+    for i in range(10):
+        rows += season(f"bat{i}", 8, 7.0 + i * 0.1)
+    rows += season("only_bowler", 8, 7.0, faced=0, bowled=24)
+    xi = stats.team_of_season(frame(rows), "IPL", 2024)
+    assert len(xi) == 11 and (xi["role"] == "bowler").sum() == 1         # no keeper or all-rounders
+
+
+def test_momentum_projection_and_swing_balls():
+    rows = []
+    # Innings 1: 4 off the first ball, a wide, a wicket, then a single.
+    for seq, (legal, runs, bat, out, e0, e1) in enumerate([
+            (True, 4, 4, 0, 160.0, 158.6), (False, 1, 0, 0, 158.6, 158.6),
+            (True, 0, 0, 1, 158.6, 148.0), (True, 1, 1, 0, 148.0, 146.9)], start=1):
+        rows.append({"match_id": "m", "innings_no": 1, "seq": seq, "batting_team": "A",
+                     "batter_id": "x", "bowler_id": "y", "is_legal": legal, "runs_batter": bat,
+                     "runs_total": runs, "dismissals": out, "wicket_kind": "bowled" if out else None,
+                     "out_id": "x" if out else None, "expected_before": e0, "expected_after": e1,
+                     "runs_added": runs + e1 - e0})
+    m = stats.momentum(pd.DataFrame(rows))
+    assert list(m["over_ball"]) == ["0.1", "0.2", "0.2", "0.3"]           # the wide shows as 0.2
+    assert list(m["projected"]) == [163.0, 164.0, 153.0, 153.0]           # 4 + 158.6, 5 + 158.6, ...
+    assert list(m["wickets_after"]) == [0, 0, 1, 1]
+    top = stats.swing_balls(m, n=2)
+    assert list(top["seq"]) == [3, 1]                                     # the wicket swung most
+    names = pd.Series({"x": "Kohli", "y": "Bumrah"})
+    assert stats.describe_ball(top.iloc[0], names) == "Bumrah to Kohli: **Kohli out**, bowled"
+    assert stats.describe_ball(top.iloc[1], names) == "Kohli hits a **four** off Bumrah"
+    assert stats.momentum(pd.DataFrame()).empty

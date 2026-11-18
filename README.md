@@ -16,10 +16,12 @@ flowchart LR
     Q -->|pass| G1[(Gold model<br/>run expectancy,<br/>environment, venue)]
     G1 --> G2[(Gold ratings<br/>ball values, impact,<br/>0–10 ratings, form)]
     G2 --> V{Validation}
-    G2 --> D[Streamlit<br/>dashboard]
+    V -->|pass| P[Parquet export<br/>GitHub release]
+    P --> D[Streamlit<br/>dashboard]
+    W[Wikidata +<br/>Wikimedia Commons] -->|monthly| S
 ```
 
-A scheduled Databricks job (`docs/daily_job.md`) runs Bronze → Silver → checks → ratings → form → validation every morning on serverless compute, with failure emails.
+A scheduled Databricks job (`docs/daily_job.md`) runs Bronze → Silver → checks → ratings → form → validation → Parquet export every morning on serverless compute, with failure emails. The dashboard reads the exported Parquet files from a public GitHub release, so it needs no Databricks token and never waits for a warehouse to start.
 
 ## Repo layout
 
@@ -65,6 +67,7 @@ scripts/download_cricsheet.py  Local fallback download
 | Silver | `silver.match_players` | player in a match |
 | Silver | `silver.players` | player (Cricsheet Register ID) |
 | Silver | `silver.venues` | ground (Cricsheet venue register): id, unique name, ESPNcricinfo id |
+| Silver | `silver.player_photos` | player → Wikimedia Commons photo, author and licence (notebook 10, monthly) |
 | Silver | `silver.venue_names` | every spelling of a ground used in match data → its venue id (spellings shared by two grounds are left out) |
 | Gold | `gold.run_expectancy` | (model version, balls left, wickets down): expected runs to the end of the innings |
 | Gold | `gold.environment_factors` | (model version, competition, year): how high-scoring that competition-season was |
@@ -176,21 +179,27 @@ All 26 checks pass.
 
 ## Dashboard
 
-A seven-page Streamlit app (`app/`), deployed on Streamlit Community Cloud with main file `app/streamlit_app.py`:
+An eight-page Streamlit app (`app/`), deployed on Streamlit Community Cloud with main file `app/streamlit_app.py`:
 
 | Page | Shows |
 | --- | --- |
 | Form leaderboard | Top players by form, overall or per competition; click a row to open the player |
 | Player | Nationality and every team played for, current form, consistency (median, spread, good and off days), last 20 ratings as a colour-banded chart, where the impact comes from, best grounds, most-faced bowlers and batters, and the full match history with filters (competition, year, role) and pages; click a match to open it |
-| Match | Score, result, and both teams' players rated with their batting, bowling (with par: the wickets/runs a typical bowler gets from the same overs with the same wickets down, e.g. `1/34 (4.0) · par 1.2/31`) and fielding lines; the official player of the match is starred |
-| Records | Best single performances, most 9+ ratings, best career averages, best seasons and the most consistent players, overall or per competition |
+| Match | Score, result, and both teams' players rated with their batting, bowling (with par: the wickets/runs a typical bowler gets from the same overs with the same wickets down, e.g. `1/34 (4.0) · par 1.2/31`) and fielding lines; the official player of the match is starred; the knockout stage (e.g. "Final"); a momentum chart of where each innings was heading ball by ball (runs so far plus expected runs still to come, with wickets and the target marked) and the five biggest swing balls |
+| Records | Best single performances, most 9+ ratings, best career averages, best seasons, the most consistent players and the best big-match players (knockouts vs other matches), overall or per competition |
+| Team of the season | The best XI of any year of any competition: 1 wicketkeeper, 4 batters, 2 all-rounders and 4 bowlers, ranked by average rating pulled towards 6.5 by three average matches, plus who's next in line |
 | Head-to-head | Any batter against any bowler: runs, balls, dismissals, strike rate, dot balls and runs vs par, per competition |
 | Venues | Every ground (spellings merged with Cricsheet's venue register): average scores, how often the side batting first wins, who rates best there compared with elsewhere, best performances and recent matches |
 | About | Method, rating bands, model version, latest data, live validation results and known limitations |
 
-Each Gold table is read once from the SQL warehouse and cached for 12 hours, so pages respond instantly and the warehouse is barely used. Player and match pages have shareable links (`?player=…`, `?match=…`).
+Each dataset is loaded once and cached for 12 hours, so pages respond instantly. Player and match pages have shareable links (`?player=…`, `?match=…`). Player photos come from Wikimedia Commons with the author and licence shown under each one. The look (pitch-green theme, logo) is in `.streamlit/config.toml` and `app/static/`.
 
-**Secrets** (Streamlit app settings): see `.streamlit/secrets.toml.example`; add `catalog` and the `[app]` section to the week 1 secrets.
+**Where the data comes from** (`app/data.py`, first that's set wins):
+
+1. **Parquet export (recommended):** secrets `[data] url` = the `data-latest` GitHub release, published daily by `09_export_parquet`. Public files, no token in the app.
+2. **Databricks SQL warehouse:** the `[databricks]` secrets, running the same queries (`app/queries.py`) live.
+
+See `.streamlit/secrets.toml.example`.
 
 **Run locally without Databricks** (demo data with the same shape as the real tables):
 
@@ -222,6 +231,10 @@ For a backfill or a new model version, pull the latest code into your Git folder
 5. `notebooks/06_gold_ratings.py` (week 4)
 6. `notebooks/07_gold_scale_form.py` (week 5)
 7. `notebooks/08_validation.py` (week 6)
+8. `notebooks/09_export_parquet.py` (publishes the dashboard's data; needs a GitHub token secret once)
+9. `notebooks/10_player_photos.py` (monthly, by hand)
+
+After upgrading to V2.2, run `03_silver_build` once with `rebuild_matches = yes` so older matches get their knockout stage.
 
 ## Tests
 
@@ -234,4 +247,4 @@ The tests cover the dashboard (every page rendering on demo data, filters, links
 
 ## Data and attribution
 
-Ball-by-ball data from Cricsheet (cricsheet.org), used under the Open Data Commons Attribution License.
+Ball-by-ball data from Cricsheet (cricsheet.org), used under the Open Data Commons Attribution License. Player photos from Wikimedia Commons, each credited to its author under its own licence (shown with the photo); links between players and photos from Wikidata (CC0).

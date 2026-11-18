@@ -119,7 +119,7 @@ def test_match_page(demo):
     m = demo["matches"].iloc[5]
     at = run("views/match.py", match=mid)
     assert at.title[0].value == f"{m['team_1']} v {m['team_2']}"
-    assert len(at.dataframe) == 2                                 # one card per team
+    assert len(at.dataframe) >= 2                                 # one card per team
     assert len(at.dataframe[0].value) == 11
     assert at.dataframe[0].value["Bowling"].str.contains("par").any()
 
@@ -182,6 +182,44 @@ def test_venues_page(demo):
     assert at.subheader[0].value.endswith("Stadium, " + at.subheader[0].value.split()[0])   # register name
 
 
+def test_team_of_the_season_page(demo):
+    at = run("views/team_of_season.py")
+    assert at.title[0].value == "Team of the season"
+    at.number_input[0].set_value(2).run()
+    assert not at.exception
+    xi = at.dataframe[0].value
+    assert len(xi) == 11 and list(xi["#"]) == list(range(1, 12))
+
+
+def test_records_big_match_tab(demo):
+    at = run("views/records.py")
+    assert not at.exception
+    assert any("knockout" in c.value for c in at.caption)
+
+
+def test_match_page_shows_stage(demo):
+    final = demo["matches"].query("event_stage == 'Final'")["match_id"].iloc[0]
+    at = run("views/match.py", match=final)
+    assert any(", Final ·" in c.value and c.value.rstrip().endswith("Stadium, " + c.value.split("Stadium, ")[-1])
+               and not c.value.rstrip().endswith("·") for c in at.caption)
+
+
+def test_match_page_momentum(demo):
+    mid = demo["balls"]["match_id"].iloc[0]
+    at = run("views/match.py", match=mid)
+    heads = [h.value for h in at.subheader]
+    assert "Momentum" in heads and "Biggest swing balls" in heads
+    swings = at.dataframe[-1].value
+    assert len(swings) == 5 and "What happened" in swings.columns
+
+
+def test_player_photo_with_attribution(demo):
+    pid = demo["photos"]["player_id"].iloc[0]
+    at = run("views/player.py", player=pid)
+    credit = [c.value for c in at.caption if "Wikimedia Commons" in c.value]
+    assert credit and "Demo Photographer" in credit[0] and "CC BY-SA 4.0" in credit[0]
+
+
 def test_about_page(demo):
     at = run("views/about.py")
     assert at.title[0].value == "About Slogonomics"
@@ -197,3 +235,37 @@ def test_missing_data_shows_an_error_not_a_crash(tmp_path):
         assert "couldn't be loaded" in at.error[0].value
     finally:
         os.environ.pop("CRICKET_RATINGS_DATA_DIR", None)
+
+
+def test_reads_the_parquet_export_from_a_url(demo, monkeypatch, tmp_path):
+    """With [data] url set, datasets are downloaded as Parquet files: no warehouse."""
+    import data
+    folder = str(tmp_path)
+    write(folder)
+    old = os.environ.pop("CRICKET_RATINGS_DATA_DIR", None)
+    asked = []
+
+    class Resp:
+        def __init__(self, path):
+            self.content = open(path, "rb").read()
+
+        def raise_for_status(self):
+            pass
+
+    def fake_get(url, timeout):
+        asked.append(url)
+        return Resp(os.path.join(folder, url.rsplit("/", 1)[-1]))
+
+    monkeypatch.setenv("CRICKET_RATINGS_DATA_URL", "https://example.org/releases/download/data-latest/")
+    monkeypatch.setattr(data.requests, "get", fake_get)
+    try:
+        data._load.clear()
+        df = data.load("ratings")
+        assert asked == ["https://example.org/releases/download/data-latest/ratings.parquet"]
+        assert len(df) == len(demo["ratings"])
+        balls = data.match_balls(demo["balls"]["match_id"].iloc[0])
+        assert len(balls) and balls["match_id"].nunique() == 1
+    finally:
+        if old:
+            os.environ["CRICKET_RATINGS_DATA_DIR"] = old
+        data._load.clear()

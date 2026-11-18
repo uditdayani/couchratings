@@ -50,17 +50,34 @@ edge = total["vs_par_per_over"]
 k[4].metric("Runs vs par per over", "–" if pd.isna(edge) else f"{edge:+.2f}",
             help="Runs the batter scored against this bowler, minus what a typical batter scores "
                  "from the same overs with the same wickets down, per 6 balls. Getting out counts "
-                 "against him. Positive: the batter came out on top.")
-if not pd.isna(edge):
-    if total["balls"] < 12:
-        verdict = "Too few balls to say who has the upper hand."
-    elif edge > 0.5:
-        verdict = f"**{names.get(batter, batter)}** has had the upper hand."
-    elif edge < -0.5:
-        verdict = f"**{names.get(bowler, bowler)}** has had the upper hand."
-    else:
-        verdict = "Honours roughly even."
-    st.markdown(verdict)
+                 "against him. Positive: better than a typical batter would have done.")
+
+ctx = stats.context(matchups, batter, bowler)
+bat_name, bowl_name = names.get(batter, batter), names.get(bowler, bowler)
+
+
+def summary(rec):
+    if rec["balls"] == 0:
+        return "no balls yet"
+    rpo = 6 * rec["runs"] / rec["balls"]
+    outs = (f"out every {rec['balls_per_dismissal']:.0f} balls" if rec["dismissals"]
+            else "never out")
+    return f"{rpo:.1f} an over, {outs}, {rec['vs_par_per_over']:+.2f} vs par per over"
+
+
+st.markdown(f"- **{bat_name} against {bowl_name}:** {summary(ctx['pair'])}  \n"
+            f"- **Other batters against {bowl_name}:** {summary(ctx['others_v_bowler'])}  \n"
+            f"- **{bat_name} against other bowlers:** {summary(ctx['batter_v_others'])}")
+v = stats.verdict(ctx)
+st.markdown({
+    "too few": "Too few balls between them to say who has the upper hand.",
+    "batter": f"**{bat_name}** has had the upper hand: he has done better against {bowl_name} "
+              "than other batters have.",
+    "bowler": f"**{bowl_name}** has had the upper hand: {bat_name} has done worse against him "
+              "than other batters have.",
+    "even": f"Honours roughly even: {bat_name} has done about as well against {bowl_name} as "
+            "other batters have.",
+}[v])
 
 table = pd.DataFrame({
     "Competition": m["competition"], "Matches": m["matches"].astype(int),

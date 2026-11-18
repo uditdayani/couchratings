@@ -158,6 +158,40 @@ def add_rates(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+COLS = ["balls", "runs", "dismissals", "dots", "fours", "sixes", "runs_vs_par", "matches"]
+EDGE = 0.5   # runs vs par per over: a gap bigger than this is an "upper hand"
+
+
+def record(rows: pd.DataFrame) -> pd.Series:
+    """Totals and rates for a set of matchup rows, as one Series."""
+    total = rows[COLS].sum().to_frame().T
+    return add_rates(total).iloc[0]
+
+
+def context(matchups: pd.DataFrame, batter_id: str, bowler_id: str) -> dict:
+    """The pairing, plus how other batters fared against this bowler and how this batter
+    fared against other bowlers, so a head-to-head is judged against the right yardstick:
+    a batter at par against an elite bowler has done well."""
+    pair = (matchups["batter_id"] == batter_id) & (matchups["bowler_id"] == bowler_id)
+    return {"pair": record(matchups[pair]),
+            "others_v_bowler": record(matchups[(matchups["bowler_id"] == bowler_id) & ~pair]),
+            "batter_v_others": record(matchups[(matchups["batter_id"] == batter_id) & ~pair])}
+
+
+def verdict(ctx: dict, min_balls: int = 12) -> str:
+    """Who has had the upper hand: the batter's runs vs par per over against this bowler,
+    compared with what every other batter has managed against him."""
+    pair, others = ctx["pair"], ctx["others_v_bowler"]
+    if pair["balls"] < min_balls:
+        return "too few"
+    if others["balls"] < 60 or pd.isna(others["vs_par_per_over"]):
+        base = 0.0                                   # little else to compare with: use par
+    else:
+        base = others["vs_par_per_over"]
+    gap = pair["vs_par_per_over"] - base
+    return "batter" if gap > EDGE else "bowler" if gap < -EDGE else "even"
+
+
 def opponents(matchups: pd.DataFrame, player_id: str, as_role: str = "batter",
               min_balls: int = 12) -> pd.DataFrame:
     """Everyone a batter has faced (or a bowler has bowled to), all competitions combined,
@@ -247,3 +281,149 @@ def player_venues(ratings: pd.DataFrame, matches: pd.DataFrame, player_id: str,
     g["difference"] = (g["average"] - other.fillna(overall)).round(2)
     return g.drop(columns="total").assign(average=g["average"].round(2)) \
             .sort_values("average", ascending=False)
+
+
+# ------------------------------------------------------------------ big matches
+
+BIG_STAGE = r"final|semi|qualifier|eliminator|play-?off|knock"   # "Final", "Qualifier 1", ...
+
+
+def is_big(matches: pd.DataFrame) -> pd.Series:
+    """Knockout matches: finals, semi-finals, qualifiers, eliminators, play-offs."""
+    stage = matches["event_stage"] if "event_stage" in matches.columns else pd.Series(None, index=matches.index)
+    return stage.fillna("").str.contains(BIG_STAGE, case=False, regex=True)
+
+
+def big_match_ids(matches: pd.DataFrame) -> set:
+    return set(matches.loc[is_big(matches), "match_id"])
+
+
+def big_match_players(ratings: pd.DataFrame, matches: pd.DataFrame, competition: Optional[str] = None,
+                      min_matches: int = 3) -> pd.DataFrame:
+    """Players with `min_matches`+ rated knockout matches: their average there, their best,
+    and the difference from their average in other matches."""
+    r = rated(ratings)
+    if competition:
+        r = r[r["competition"] == competition]
+    big = r["match_id"].isin(big_match_ids(matches))
+    g = (r[big].groupby(["player_id", "name"])
+         .agg(matches=("match_id", "nunique"), average=("rating", "mean"), best=("rating", "max"))
+         .reset_index())
+    g = g[g["matches"] >= min_matches]
+    other = r[~big].groupby("player_id")["rating"].mean().rename("other")
+    g = g.merge(other, on="player_id", how="left")
+    g["difference"] = (g["average"] - g["other"]).round(2)
+    return g.assign(average=g["average"].round(2), other=g["other"].round(2)) \
+            .sort_values("average", ascending=False)
+
+
+def player_big_matches(ratings: pd.DataFrame, matches: pd.DataFrame, player_id: str) -> dict:
+    """A player's knockout record: matches, average, and difference from his other matches."""
+    r = rated(ratings[ratings["player_id"] == player_id])
+    big = r["match_id"].isin(big_match_ids(matches))
+    if not big.any():
+        return {"matches": 0, "average": None, "difference": None}
+    other = r.loc[~big, "rating"].mean()
+    avg = r.loc[big, "rating"].mean()
+    return {"matches": int(big.sum()), "average": round(avg, 2),
+            "difference": None if pd.isna(other) else round(avg - other, 2)}
+
+
+# ------------------------------------------------------------------ team of the season
+
+XI = {"wicketkeeper": 1, "batter": 4, "all-rounder": 2, "bowler": 4}
+STAGE_ORDER = {"opener": 0, "top order": 1, "middle order": 2, "finisher": 3}
+SHRINK = 3   # matches of an average (6.5) rating added to every player's record
+
+
+def season_players(ratings: pd.DataFrame, competition: str, year: int, min_matches: int = 6) -> pd.DataFrame:
+    """Everyone with `min_matches`+ rated matches in one year of one competition, with a role
+    and a selection score: their average shrunk towards 6.5 by 3 matches, so a short great
+    run doesn't beat a long very good one."""
+    r = rated(ratings)
+    r = r[(r["competition"] == competition) & (r["match_date"].dt.year == year)]
+    if r.empty:
+        return pd.DataFrame()
+    r = r.assign(byes=r["byes_conceded"] if "byes_conceded" in r.columns else 0,
+                 batting_stage=r["batting_stage"] if "batting_stage" in r.columns else None)
+    g = r.groupby(["player_id", "name"]).agg(
+        matches=("match_id", "nunique"), average=("rating", "mean"), total=("rating", "sum"),
+        best=("rating", "max"), faced=("balls_faced", "sum"), bowled=("balls_bowled", "sum"),
+        stumpings=("stumpings", "sum"), byes=("byes", "sum"),
+        team=("team", lambda x: x.mode().iloc[0]),
+        stage=("batting_stage", lambda x: x.dropna().mode().iloc[0] if x.notna().any() else None),
+    ).reset_index()
+    g = g[g["matches"] >= min_matches]
+    faced_pm, bowled_pm = g["faced"] / g["matches"], g["bowled"] / g["matches"]
+    keeper = (g["stumpings"] > 0) | (g["byes"] > 0)
+    g["role"] = np.select(
+        [keeper, (bowled_pm >= 12) & (faced_pm >= 10), bowled_pm >= 12],
+        ["wicketkeeper", "all-rounder", "bowler"], default="batter")
+    g["score"] = (g["total"] + 6.5 * SHRINK) / (g["matches"] + SHRINK)
+    return g.sort_values("score", ascending=False)
+
+
+def team_of_season(ratings: pd.DataFrame, competition: str, year: int, min_matches: int = 6) -> pd.DataFrame:
+    """The best XI of a season: 1 wicketkeeper, 4 batters, 2 all-rounders and 4 bowlers, each
+    the highest-scoring in their role. If a role is short, the best remaining players of any
+    role fill the gaps. Listed in batting order: keeper and batters by batting stage, then
+    all-rounders, then bowlers."""
+    pool = season_players(ratings, competition, year, min_matches)
+    if pool.empty:
+        return pool
+    picked = []
+    for role, n in XI.items():
+        picked += pool[pool["role"] == role].head(n)["player_id"].tolist()
+    if len(picked) < 11:
+        rest = pool[~pool["player_id"].isin(picked)]
+        picked += rest.head(11 - len(picked))["player_id"].tolist()
+    xi = pool[pool["player_id"].isin(picked)].copy()
+    order = {"wicketkeeper": 0, "batter": 0, "all-rounder": 1, "bowler": 2}
+    xi["_group"] = xi["role"].map(order)
+    xi["_stage"] = xi["stage"].map(STAGE_ORDER).fillna(4)
+    xi = xi.sort_values(["_group", "_stage", "score"], ascending=[True, True, False])
+    return xi.drop(columns=["_group", "_stage", "total"]).assign(
+        average=xi["average"].round(2), score=xi["score"].round(2)).reset_index(drop=True)
+
+
+# ------------------------------------------------------------------ momentum
+
+def momentum(balls: pd.DataFrame) -> pd.DataFrame:
+    """Ball by ball, where each innings was heading: projected total = runs so far + the
+    runs a typical side would still add from that point (balls left, wickets down, adjusted
+    for competition, season and ground). Adds the over.ball label and the score."""
+    if balls.empty:
+        return balls
+    b = balls.sort_values(["innings_no", "seq"]).copy()
+    g = b.groupby("innings_no")
+    b["runs_after"] = g["runs_total"].cumsum()
+    b["runs_before"] = b["runs_after"] - b["runs_total"]
+    b["wickets_after"] = g["dismissals"].cumsum()
+    b["legal_no"] = g["is_legal"].cumsum()
+    # A wide or no-ball shows as the ball it preceded (e.g. 5.3 wide, then 5.3)
+    shown = b["legal_no"] + (~b["is_legal"]).astype(int)
+    b["over_ball"] = ((shown - 1) // 6).astype(str) + "." + ((shown - 1) % 6 + 1).astype(str)
+    b["overs"] = b["legal_no"] / 6
+    b["projected_before"] = (b["runs_before"] + b["expected_before"]).round(0)
+    b["projected"] = (b["runs_after"] + b["expected_after"]).round(0)
+    return b
+
+
+def swing_balls(m: pd.DataFrame, n: int = 5) -> pd.DataFrame:
+    """The balls that moved the projected total most, either way."""
+    if m.empty:
+        return m
+    return m.reindex(m["runs_added"].abs().sort_values(ascending=False).index).head(n)
+
+
+def describe_ball(row, names: pd.Series) -> str:
+    """'Bumrah to Kohli: OUT, caught' / 'Russell hits a six off Bumrah' style text."""
+    bowler, batter = names.get(row["bowler_id"], "?"), names.get(row["batter_id"], "?")
+    if row["dismissals"] > 0:
+        out = names.get(row["out_id"], batter) if pd.notna(row.get("out_id")) else batter
+        return f"{bowler} to {batter}: **{out} out**, {row['wicket_kind']}"
+    if row["runs_batter"] == 6:
+        return f"{batter} hits a **six** off {bowler}"
+    if row["runs_batter"] == 4:
+        return f"{batter} hits a **four** off {bowler}"
+    return f"{bowler} to {batter}: {int(row['runs_total'])} run{'s' if row['runs_total'] != 1 else ''}"

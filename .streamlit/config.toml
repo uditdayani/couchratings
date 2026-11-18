@@ -1,0 +1,11 @@
+# Slogonomics look: Streamlit Community Cloud reads this from the repo's .streamlit folder.
+[theme]
+base = "light"
+primaryColor = "#0E7C66"              # pitch green: buttons, selected tabs, sliders
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F2F6F4"  # sidebar and inputs
+textColor = "#1B2420"
+font = "sans serif"
+
+[client]
+toolbarMode = "viewer"                # hide developer options from visitors

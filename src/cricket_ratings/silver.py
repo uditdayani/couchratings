@@ -88,6 +88,8 @@ def build_matches(ok: DataFrame) -> DataFrame:
         F.col(f"{i}.season").alias("season"),
         F.col(f"{i}.event.name").alias("event_name"),
         F.col(f"{i}.event.match_number").alias("match_number"),
+        F.col(f"{i}.event.stage").alias("event_stage"),          # "Final", "Qualifier 1", ...
+        F.col(f"{i}.event.group").alias("event_group"),
         F.col(f"{i}.gender").alias("gender"),
         F.col(f"{i}.match_type").alias("match_type"),
         F.col(f"{i}.team_type").alias("team_type"),
@@ -248,6 +250,23 @@ def build_silver(spark: SparkSession, t: Tables, run_id: str,
     )
     storage.append(log, t.ingest_log)
     return {"parsed": n_ok, "quarantined": len(batch_rows) - n_ok}
+
+
+def rebuild_matches(spark: SparkSession, t: Tables,
+                    club_events: Sequence[str] = IN_SCOPE_CLUB_EVENTS) -> dict:
+    """Rebuild silver.matches in full from the Bronze files behind it (same file hashes), so
+    columns added later (such as the event stage) are filled for every match. Deliveries and
+    the other Silver tables are untouched."""
+    # Collected first (a few thousand hashes), so the rebuild never reads the table it replaces.
+    hashes = [r.file_hash for r in spark.table(t.silver_matches).select("file_hash").distinct().collect()]
+    current = spark.createDataFrame([(h,) for h in hashes], "file_hash string")
+    files = spark.table(t.bronze_files).join(current, "file_hash").dropDuplicates(["file_hash"])
+    ok = parse(files, club_events).filter(F.col("quarantine_reason").isNull())
+    before = len(hashes)
+    storage.overwrite(build_matches(ok), t.silver_matches)
+    after = spark.table(t.silver_matches)
+    return {"matches_before": before, "matches_after": after.count(),
+            "with_stage": after.filter(F.col("event_stage").isNotNull()).count()}
 
 
 # ------------------------------------------------------------------- venues

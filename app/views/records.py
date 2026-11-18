@@ -23,7 +23,7 @@ def open_on_select(event, frame: pd.DataFrame, column: str, page: str, state_key
 
 
 tabs = st.tabs(["Best performances", "Most 9+ ratings", "Best career average",
-                "Best seasons", "Most consistent"])
+                "Best seasons", "Most consistent", "Big-match players"])
 
 with tabs[0]:
     best = stats.best_performances(ratings, scope).reset_index(drop=True)
@@ -82,3 +82,19 @@ with tabs[4]:
         hide_index=True, use_container_width=True, on_select="rerun",
         selection_mode="single-row", key="rec_cons")
     open_on_select(ev, cons, "player_id", "views/player.py", "player_id")
+
+with tabs[5]:
+    big = stats.big_match_players(ratings, matches, scope).reset_index(drop=True)
+    st.caption("Average rating in knockout matches (finals, semi-finals, qualifiers, eliminators), "
+               "minimum 3, and the difference from the same player's other matches.")
+    if big.empty:
+        st.caption("No player has 3+ rated knockout matches yet (needs the match stage: run "
+                   "03_silver_build once with rebuild_matches = yes).")
+    else:
+        ev = st.dataframe(ui.style_ratings(pd.DataFrame({
+            "Player": big["name"], "Rating": big["average"], "Knockouts": big["matches"],
+            "Best": big["best"].map(ui.fmt_rating), "Other matches": big["other"].map(ui.fmt_rating),
+            "Difference": [f"{d:+.2f}" if pd.notna(d) else "–" for d in big["difference"]],
+        })), hide_index=True, use_container_width=True, on_select="rerun",
+            selection_mode="single-row", key="rec_big")
+        open_on_select(ev, big, "player_id", "views/player.py", "player_id")
