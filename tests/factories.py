@@ -21,10 +21,13 @@ def ball(batter, bowler, non_striker, bat=0, extras=None, wickets=None):
     return d
 
 
-def match(innings, outcome, match_type="T20", season="2025", player_of_match=None):
+def match(innings, outcome, match_type="T20", season="2025", player_of_match=None, stage=None):
+    event = {"name": "Test League", "match_number": 1}
+    if stage:
+        event = {"name": "Test League", "stage": stage}
     info = {
         "balls_per_over": 6, "city": "Testville", "dates": ["2025-05-01"],
-        "event": {"name": "Test League", "match_number": 1},
+        "event": event,
         "gender": "male", "match_type": match_type, "outcome": outcome, "overs": 20,
         "players": PLAYERS, "registry": {"people": REGISTRY}, "season": season,
         "team_type": "club", "teams": ["Alpha", "Beta"],
@@ -78,7 +81,7 @@ def match_b():
 
 def match_c():
     """Tie, decided by a super over that Beta won."""
-    return match(
+    return match(stage="Final",
         innings=[
             {"team": "Alpha", "overs": [{"over": 0, "deliveries": [ball("A1", "B1", "A2", bat=4)]}]},
             {"team": "Beta", "target": {"overs": 20, "runs": 5},

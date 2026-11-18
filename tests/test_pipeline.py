@@ -214,3 +214,17 @@ def test_venue_register_maps_every_spelling_once(spark, built, tmp_path):  # noq
     assert summary["match_venues_not_in_register"] == len(used) - 1
     v1 = spark.table(t.silver_venues).filter("venue_id = 'v1'").first()
     assert v1.unique_name == f"{used[0]}, Testville" and v1.key_cricinfo == "111"
+
+
+def test_event_stage_kept_and_rebuild_fills_old_rows(spark, built):  # noqa: F811
+    t, _, _ = built
+    stages = {r.match_id: r.event_stage for r in spark.table(t.silver_matches).collect()}
+    assert stages["1000003"] == "Final" and stages["1000001"] is None
+    # Tables built before the column existed: rebuilding from Bronze fills it.
+    from cricket_ratings import storage
+    old = spark.table(t.silver_matches).drop("event_stage", "event_group")
+    storage.overwrite(spark.createDataFrame(old.collect(), old.schema), t.silver_matches)
+    summary = silver.rebuild_matches(spark, t, club_events=("Test League",))
+    assert summary["matches_before"] == summary["matches_after"] == len(stages)
+    assert summary["with_stage"] == 1
+    assert spark.table(t.silver_matches).filter("match_id = '1000003'").first().event_stage == "Final"

@@ -1,23 +1,28 @@
-"""All data the dashboard shows, loaded once and cached.
+"""All data the dashboard shows, loaded once and cached for 12 hours.
 
-The Gold tables are small (a few hundred thousand rows), so each is read whole from the
-Databricks SQL warehouse and cached for 12 hours. Clicks are then instant, and the Free
-Edition warehouse is barely used.
-
-Demo mode: set the environment variable CRICKET_RATINGS_DATA_DIR to a folder of
-<table>.parquet files and the app reads those instead (used by the tests and for running
-the dashboard without Databricks).
+Three sources, first match wins:
+  1. Demo: the environment variable CRICKET_RATINGS_DATA_DIR names a folder of
+     <dataset>.parquet files (used by the tests, and to run the app without anything else).
+  2. Parquet export: secrets `[data] url` (or CRICKET_RATINGS_DATA_URL) is a public folder of
+     <dataset>.parquet files, published daily by notebook 09_export_parquet as a GitHub
+     release. No warehouse, no token.
+  3. Databricks: the SQL warehouse, using the queries in queries.py and the `[databricks]`
+     secrets.
 
 `load_all` loads what every page needs up front; larger, page-specific datasets
-(`matchups`) load the first time a page asks for them.
+(`matchups`, `balls`) load the first time a page asks for them.
 """
+import io
 import os
 
 import pandas as pd
+import requests
+
+from queries import CORE, balls_query, matches_query, queries  # noqa: F401
 import streamlit as st
 
 CACHE_SECONDS = 12 * 3600
-OPTIONAL = {"validation", "matchups"}   # the app still works if these tables don't exist yet
+OPTIONAL = {"validation", "matchups", "balls", "photos"}   # the app works without these
 
 
 class DataError(Exception):
@@ -35,64 +40,8 @@ def settings() -> dict:
     db, app = _secrets("databricks"), _secrets("app")
     return {"catalog": db.get("catalog", "workspace"),
             "version": app.get("model_version", "v3"),
-            "demo_dir": os.environ.get("CRICKET_RATINGS_DATA_DIR")}
-
-
-def matches_query(c: str, venue_register: bool = True) -> str:
-    """Matches with both innings' scores. With the venue register (silver.venue_names and
-    silver.venues), each match also gets the register's venue id and unique name."""
-    venue_cols = ("vn.venue_id, v.unique_name AS venue_name" if venue_register
-                  else "CAST(NULL AS STRING) AS venue_id, CAST(NULL AS STRING) AS venue_name")
-    venue_joins = (f"""
-            LEFT JOIN {c}.silver.venue_names vn ON vn.name = m.venue
-            LEFT JOIN {c}.silver.venues v ON v.venue_id = vn.venue_id""" if venue_register else "")
-    return f"""
-            SELECT m.match_id, m.match_date, m.season, m.event_name, m.match_number, m.venue,
-                   {venue_cols},
-                   m.city, m.team_1, m.team_2, m.toss_winner, m.toss_decision, m.result,
-                   m.winner, m.win_by_runs, m.win_by_wickets, m.method, m.super_over_winner,
-                   m.player_of_match_ids,
-                   i1.batting_team AS inn1_team, i1.total_runs AS inn1_runs,
-                   i1.wickets AS inn1_wickets, i1.legal_balls AS inn1_balls,
-                   i2.batting_team AS inn2_team, i2.total_runs AS inn2_runs,
-                   i2.wickets AS inn2_wickets, i2.legal_balls AS inn2_balls
-            FROM {c}.silver.matches m
-            LEFT JOIN {c}.silver.innings i1 ON i1.match_id = m.match_id AND i1.innings_no = 1
-            LEFT JOIN {c}.silver.innings i2 ON i2.match_id = m.match_id AND i2.innings_no = 2{venue_joins}
-            WHERE m.match_id IN (SELECT DISTINCT match_id FROM {c}.gold.player_match_ratings
-                                 WHERE version = :version)"""
-
-
-def queries(c: str) -> dict:
-    """SQL for each dataset. `c` is the catalog; :version is bound as a parameter."""
-    return {
-        "ratings": f"""
-            SELECT r.*, p.name
-            FROM {c}.gold.player_match_ratings r
-            LEFT JOIN {c}.silver.players p ON p.player_id = r.player_id
-            WHERE r.version = :version""",
-        "matches": matches_query(c),
-        "matchups": f"""
-            SELECT competition, batter_id, bowler_id, matches, balls, runs, dismissals,
-                   dots, fours, sixes, runs_vs_par
-            FROM {c}.gold.matchups WHERE version = :version""",
-        "form": f"""
-            SELECT scope, player_id, name, form_rating, matches_counted, last_match_date,
-                   active, leaderboard_rank
-            FROM {c}.gold.player_form WHERE version = :version""",
-        "meta": f"""
-            SELECT v.version, v.created_at, v.fitted_matches, v.first_match_date,
-                   v.last_match_date AS fitted_to, v.params, v.notes,
-                   (SELECT max(match_date) FROM {c}.silver.matches) AS latest_match,
-                   (SELECT max(logged_at) FROM {c}.ops.ingest_log) AS last_ingest
-            FROM {c}.gold.model_versions v WHERE v.version = :version""",
-        "validation": f"""
-            SELECT `check`, scope, value, target, passed, detail, checked_at
-            FROM {c}.ops.validation_results
-            WHERE version = :version AND run_id = (
-              SELECT run_id FROM {c}.ops.validation_results WHERE version = :version
-              ORDER BY checked_at DESC LIMIT 1)""",
-    }
+            "demo_dir": os.environ.get("CRICKET_RATINGS_DATA_DIR"),
+            "data_url": os.environ.get("CRICKET_RATINGS_DATA_URL") or _secrets("data").get("url")}
 
 
 def _from_databricks(name: str, cfg: dict) -> pd.DataFrame:
@@ -116,18 +65,28 @@ def _from_databricks(name: str, cfg: dict) -> pd.DataFrame:
         return cur.fetchall_arrow().to_pandas()
 
 
+def _from_url(name: str, base: str) -> pd.DataFrame:
+    r = requests.get(f"{base.rstrip('/')}/{name}.parquet", timeout=120)
+    r.raise_for_status()
+    return pd.read_parquet(io.BytesIO(r.content))
+
+
 def load(name: str) -> pd.DataFrame:
     """One dataset. Cached per data source and model version, so changing either reloads."""
     cfg = settings()
-    return _load(name, cfg["demo_dir"], cfg["catalog"], cfg["version"])
+    return _load(name, cfg["demo_dir"], cfg["data_url"], cfg["catalog"], cfg["version"])
 
 
-@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Loading ratings (the warehouse may take a minute to wake up)…")
-def _load(name: str, demo_dir, catalog: str, version: str) -> pd.DataFrame:
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Loading ratings…")
+def _load(name: str, demo_dir, data_url, catalog: str, version: str) -> pd.DataFrame:
     cfg = {"demo_dir": demo_dir, "catalog": catalog, "version": version}
     try:
-        if cfg["demo_dir"]:
-            df = pd.read_parquet(os.path.join(cfg["demo_dir"], f"{name}.parquet"))
+        if demo_dir:
+            df = pd.read_parquet(os.path.join(demo_dir, f"{name}.parquet"))
+        elif data_url:
+            df = _from_url(name, data_url)
+        elif name == "balls":
+            return pd.DataFrame()            # from the warehouse, one match at a time instead
         else:
             df = _from_databricks(name, cfg)
     except DataError:
@@ -137,7 +96,7 @@ def _load(name: str, demo_dir, catalog: str, version: str) -> pd.DataFrame:
             return pd.DataFrame()
         raise DataError(f"Couldn't load {name}: {e}") from e
     if name == "matches":                    # demo data or tables without the venue register
-        for col in ("venue_id", "venue_name"):
+        for col in ("venue_id", "venue_name", "event_stage"):
             if col not in df.columns:
                 df[col] = None
     if name == "ratings":                    # tables built before par existed
@@ -150,5 +109,27 @@ def _load(name: str, demo_dir, catalog: str, version: str) -> pd.DataFrame:
     return df
 
 
+def match_balls(match_id: str) -> pd.DataFrame:
+    """Ball-by-ball values for one match (momentum chart). Empty if not available."""
+    cfg = settings()
+    if cfg["demo_dir"] or cfg["data_url"]:
+        balls = load("balls")
+        return balls[balls["match_id"] == match_id] if not balls.empty else balls
+    return _match_balls_from_databricks(match_id, cfg["catalog"], cfg["version"])
+
+
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner="Loading the ball-by-ball…", max_entries=200)
+def _match_balls_from_databricks(match_id: str, catalog: str, version: str) -> pd.DataFrame:
+    from databricks import sql
+    db = _secrets("databricks")
+    try:
+        with sql.connect(server_hostname=db["server_hostname"], http_path=db["http_path"],
+                         access_token=db["access_token"]) as conn, conn.cursor() as cur:
+            cur.execute(balls_query(catalog), {"version": version, "match_id": match_id})
+            return cur.fetchall_arrow().to_pandas()
+    except Exception:
+        return pd.DataFrame()
+
+
 def load_all() -> dict:
-    return {name: load(name) for name in ("ratings", "matches", "form", "meta", "validation")}
+    return {name: load(name) for name in CORE}

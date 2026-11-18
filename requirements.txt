@@ -3,3 +3,4 @@ databricks-sql-connector>=3.0
 pandas
 pyarrow
 altair
+requests

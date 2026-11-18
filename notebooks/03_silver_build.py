@@ -35,6 +35,22 @@ print(counts)
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## One-off: rebuild `silver.matches`
+# MAGIC Set `rebuild_matches = yes` once after an upgrade that adds match columns (V2.2 added the
+# MAGIC knockout stage, e.g. "Final", "Qualifier 1"), so older matches get them too. Leave it at `no`
+# MAGIC for daily runs.
+
+# COMMAND ----------
+
+dbutils.widgets.dropdown("rebuild_matches", "no", ["no", "yes"])
+if dbutils.widgets.get("rebuild_matches") == "yes":
+    print(silver.rebuild_matches(spark, t))
+    display(spark.sql(f"""SELECT event_stage, count(*) AS matches FROM {t.silver_matches}
+                          WHERE event_stage IS NOT NULL GROUP BY 1 ORDER BY 2 DESC"""))
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Venue register
 # MAGIC Joins every spelling of a ground ("Wankhede Stadium", "Wankhede Stadium, Mumbai") to one venue,
 # MAGIC for the dashboard's Venues page. Needs `02_bronze_land` with `venue_register = yes`.

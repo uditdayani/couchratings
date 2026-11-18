@@ -3,6 +3,7 @@ import pandas as pd
 import streamlit as st
 
 import data
+import stats
 import ui
 
 ratings, matches = data.load("ratings"), data.load("matches")
@@ -32,8 +33,11 @@ m = matches[matches["match_id"] == mid].iloc[0]
 # --- header
 st.title(f"{m['team_1']} v {m['team_2']}")
 ground = m["venue_name"] if pd.notna(m.get("venue_name")) else m["venue"]
-where = ", ".join(str(x) for x in (ground, m["city"]) if pd.notna(x) and x and str(x) not in str(ground))
-st.caption(f"{m['event_name'] or comp} · {m['match_date']:%d %B %Y} · {where}")
+city = m["city"] if pd.notna(m["city"]) and m["city"] and str(m["city"]) not in str(ground) else None
+where = ", ".join(str(x) for x in (ground, city) if x is not None and pd.notna(x) and x)
+stage = m.get("event_stage")
+event = f"{m['event_name'] or comp}" + (f", {stage}" if isinstance(stage, str) and stage else "")
+st.caption(f"{event} · {m['match_date']:%d %B %Y} · {where}")
 s1, s2 = st.columns(2)
 s1.metric(str(m["inn1_team"] or ""), ui.score_line(m["inn1_runs"], m["inn1_wickets"], m["inn1_balls"]) or "–")
 s2.metric(str(m["inn2_team"] or ""), ui.score_line(m["inn2_runs"], m["inn2_wickets"], m["inn2_balls"]) or "–")
@@ -71,3 +75,48 @@ for col, team in zip(cols, [m["team_1"], m["team_2"]]):
 st.caption("★ official player of the match · \"–\" too little involvement to rate · "
            "par = wickets/runs a typical bowler gets from the same overs with the same wickets down, "
            "adjusted for competition, season and ground")
+
+# --- momentum: where each innings was heading, ball by ball
+mom = stats.momentum(data.match_balls(mid))
+if not mom.empty:
+    import altair as alt
+
+    st.subheader("Momentum")
+    names = ratings.drop_duplicates("player_id").set_index("player_id")["name"]
+    mom = mom.assign(
+        team=mom["batting_team"],
+        score=mom["runs_after"].astype(int).astype(str) + "/" + mom["wickets_after"].astype(int).astype(str),
+        what=[stats.describe_ball(r, names).replace("**", "") for _, r in mom.iterrows()],
+    )
+    tooltip = [alt.Tooltip("team:N", title="Batting"), alt.Tooltip("over_ball:N", title="Ball"),
+               alt.Tooltip("score:N", title="Score"), alt.Tooltip("projected:Q", title="Heading for"),
+               alt.Tooltip("what:N", title="What happened")]
+    x = alt.X("overs:Q", title="Overs", scale=alt.Scale(domain=[0, 20]))
+    y = alt.Y("projected:Q", title="Projected total", scale=alt.Scale(zero=False))
+    colour = alt.Color("team:N", title=None, legend=alt.Legend(orient="bottom", labelLimit=300),
+                       scale=alt.Scale(domain=[m["inn1_team"], m["inn2_team"]], range=["#1f4e9a", "#e07b00"]))
+    line = alt.Chart(mom).mark_line(interpolate="step-after").encode(x=x, y=y, color=colour, tooltip=tooltip)
+    wickets = alt.Chart(mom[mom["dismissals"] > 0]).mark_point(filled=True, size=55, shape="circle",
+                                                              color="#c0392b").encode(x=x, y=y, tooltip=tooltip)
+    layers = [line, wickets]
+    if pd.notna(m["inn1_runs"]) and (mom["innings_no"] == 2).any():
+        target = pd.DataFrame({"target": [int(m["inn1_runs"]) + 1]})
+        layers.append(alt.Chart(target).mark_rule(strokeDash=[5, 4], color="#888").encode(y="target:Q"))
+    st.altair_chart(alt.layer(*layers).properties(height=320), use_container_width=True)
+    st.caption("Projected total after each ball: runs so far plus what a typical side adds from "
+               "there (balls left, wickets down, conditions). Red dots are wickets"
+               + ("; the dashed line is the target" if (mom["innings_no"] == 2).any() else "")
+               + (" (a rain-revised target may differ)." if pd.notna(m.get("method")) else "."))
+
+    st.subheader("Biggest swing balls")
+    swings = stats.swing_balls(mom)
+    st.dataframe(pd.DataFrame({
+        "Batting": swings["team"].values,
+        "Ball": swings["over_ball"].values,
+        "What happened": [stats.describe_ball(r, names).replace("**", "") for _, r in swings.iterrows()],
+        "Score": swings["score"].values,
+        "Heading for": [f"{int(a)} → {int(b)}" for a, b in zip(swings["projected_before"], swings["projected"])],
+        "Swing (runs)": [f"{v:+.1f}" for v in swings["runs_added"]],
+    }), hide_index=True, use_container_width=True)
+    st.caption("The balls that moved the projected total most: wickets cost the batting side the "
+               "runs it was expected to add with that batter, boundaries add runs above expectation.")

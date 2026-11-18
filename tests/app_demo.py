@@ -22,7 +22,7 @@ def build(seed: int = 7) -> dict:
     rng = np.random.default_rng(seed)
     squads = {team: [(f"{team[:3].lower()}{i:02d}", f"{team.split()[0][:1]}{i} {team.split()[-1]} Player")
                      for i in range(1, 12)] for teams in COMPETITIONS.values() for team in teams}
-    matches, ratings, balls = [], [], []
+    matches, ratings, balls, deliveries = [], [], [], []
     n = 0
     for comp, teams in COMPETITIONS.items():
         for k in range(18):
@@ -39,6 +39,7 @@ def build(seed: int = 7) -> dict:
                 "match_id": mid, "match_date": date, "season": str(date.year), "event_name": comp,
                 "match_number": k + 1, "venue": f"{t1.split()[0]} Stadium", "city": t1.split()[0],
                 "venue_id": f"v_{t1.split()[0].lower()}", "venue_name": f"{t1.split()[0]} Stadium, {t1.split()[0]}",
+                "event_stage": {0: "Final", 1: "Qualifier 1", 2: "Eliminator"}.get(k),
                 "team_1": t1, "team_2": t2, "toss_winner": t1, "toss_decision": "bat",
                 "result": "win", "winner": t1 if first_wins else t2,
                 "win_by_runs": (r1 - r2) if first_wins else None,
@@ -48,6 +49,31 @@ def build(seed: int = 7) -> dict:
                 "inn2_team": t2, "inn2_runs": r2 if not first_wins else min(r2, r1 - 1),
                 "inn2_wickets": w2, "inn2_balls": int(rng.integers(90, 121)),
             })
+            # Ball by ball (momentum chart): a simple expected-runs curve, random outcomes.
+            def expected(b_left, w):
+                return 0.0 if w >= 10 else 165 * (b_left / 120) * (1 - w / 11) ** 0.8
+            for inn, (bat_team, bowl_team, n_legal) in enumerate(
+                    ((t1, t2, 120), (t2, t1, matches[-1]["inn2_balls"])), start=1):
+                w, legal, seq = 0, 0, 0
+                while legal < n_legal and w < 10:
+                    seq += 1
+                    wide = rng.random() < 0.03
+                    out = (not wide) and rng.random() < 0.05
+                    runs = 1 if wide else (0 if out else int(rng.choice([0, 1, 1, 2, 4, 6], p=[.35, .3, .1, .1, .1, .05])))
+                    before = expected(120 - legal, w)
+                    legal += 0 if wide else 1
+                    w += int(out)
+                    after = expected(120 - legal, w)
+                    deliveries.append({
+                        "match_id": mid, "innings_no": inn, "seq": seq, "batting_team": bat_team,
+                        "batter_id": squads[bat_team][min(w, 10)][0],
+                        "bowler_id": squads[bowl_team][5 + seq % 6][0], "is_legal": not wide,
+                        "runs_batter": 0 if wide else runs, "runs_total": runs, "dismissals": int(out),
+                        "wicket_kind": "caught" if out else None,
+                        "out_id": squads[bat_team][min(w - 1, 10)][0] if out else None,
+                        "b_before": 120 - legal + (0 if wide else 1),
+                        "expected_before": round(before, 2), "expected_after": round(after, 2),
+                        "runs_added": round(runs + after - before, 2)})
             for team in (t1, t2):
                 for i, (pid, name) in enumerate(squads[team]):
                     bats, bowls = i < 7, i >= 5
@@ -123,7 +149,12 @@ def build(seed: int = 7) -> dict:
          "passed": True, "detail": "4564 matches", "checked_at": pd.Timestamp("2026-11-13 12:00")},
     ])
     return {"ratings": ratings, "matches": matches, "form": form, "meta": meta, "validation": validation,
-            "matchups": matchups}
+            "matchups": matchups, "balls": pd.DataFrame(deliveries),
+            # A placeholder image (no network in tests); real photos come from Commons.
+            "photos": pd.DataFrame([{"player_id": squads[teams[0]][0][0],
+                                     "image_url": "https://upload.wikimedia.org/wikipedia/commons/placeholder.jpg",
+                                     "page_url": "https://commons.wikimedia.org/wiki/File:Placeholder.jpg",
+                                     "artist": "Demo Photographer", "license": "CC BY-SA 4.0"}])}
 
 
 def write(folder: str, seed: int = 7) -> dict:
