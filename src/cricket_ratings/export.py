@@ -40,6 +40,9 @@ def export_datasets(spark: SparkSession, queries_module, catalog: str, version: 
             else:
                 continue
         pdf = df.toPandas()
+        # Spark Connect (Databricks serverless) puts query metrics in .attrs, which pandas
+        # would try to write into the Parquet metadata as JSON and fail.
+        pdf.attrs = {}
         pdf.to_parquet(os.path.join(out_dir, f"{name}.parquet"), index=False)
         written[name] = len(pdf)
     return written

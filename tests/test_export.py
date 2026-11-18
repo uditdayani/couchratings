@@ -80,3 +80,21 @@ def test_publish_creates_the_release_once(tmp_path):
     export.publish(str(tmp_path), "me/repo", "token", session=gh)
     assert ("POST", "https://api.github.com/repos/me/repo/releases", "data-latest") in gh.calls
     assert export.download_url("me/repo") == "https://github.com/me/repo/releases/download/data-latest"
+
+
+def test_spark_metrics_in_attrs_dont_break_the_write(tmp_path):
+    """Databricks serverless attaches non-JSON metrics to toPandas() results (.attrs);
+    pandas would try to save them in the Parquet metadata."""
+    class Result:
+        def toPandas(self):
+            pdf = pd.DataFrame({"version": ["v3"], "rows": [1]})
+            pdf.attrs["metrics"] = [object()]          # not JSON-serialisable
+            return pdf
+
+    class FakeSpark:
+        def sql(self, text, args=None):
+            return Result()
+
+    written = export.export_datasets(FakeSpark(), queries, "workspace", "v3", str(tmp_path), names=["meta"])
+    assert written == {"meta": 1}
+    assert pd.read_parquet(tmp_path / "meta.parquet")["version"].tolist() == ["v3"]
